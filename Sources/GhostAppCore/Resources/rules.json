@@ -1,0 +1,19 @@
+{
+  "rules": [
+    {
+      "id": "grok-build",
+      "displayName": "Grok Build",
+      "managerNames": ["grok-build"],
+      "executableNames": ["grok", "agent"],
+      "dataPaths": [
+        {"path": "$HOME/.grok/bin", "kind": "installation", "sensitive": false},
+        {"path": "$HOME/.grok/config.toml", "kind": "configuration", "sensitive": false},
+        {"path": "$HOME/.grok/auth.json", "kind": "credential", "sensitive": true},
+        {"path": "$HOME/.grok/sessions", "kind": "session", "sensitive": true},
+        {"path": "$HOME/.grok/downloads", "kind": "cache", "sensitive": false},
+        {"path": "$HOME/.grok/logs", "kind": "log", "sensitive": false},
+        {"path": "$HOME/.grok/cache", "kind": "cache", "sensitive": false}
+      ]
+    }
+  ]
+}
