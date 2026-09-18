@@ -47,7 +47,7 @@ public final class InventoryScanner {
 
   private func scanHomebrew() -> ProviderResult {
     guard
-      let brew = context.resolveExecutable(
+      let brew = context.resolveTrustedExecutable(
         "brew",
         fallbacks: ["/opt/homebrew/bin", "/usr/local/bin"]
       )
@@ -127,21 +127,22 @@ public final class InventoryScanner {
     }
   }
 
-  private func binariesOwned(by packageRoot: String, in prefix: String) -> [String] {
-    let binaryDirectory = URL(fileURLWithPath: prefix).appendingPathComponent("bin").path
-    guard let entries = try? context.fileManager.contentsOfDirectory(atPath: binaryDirectory) else {
-      return []
-    }
-    return entries.compactMap { entry -> String? in
-      let path = URL(fileURLWithPath: binaryDirectory).appendingPathComponent(entry).path
-      let resolved = PathSafety.canonical(path)
-      return resolved.hasPrefix(packageRoot + "/") ? path : nil
+  func binariesOwned(by packageRoot: String, in prefix: String) -> [String] {
+    ["bin", "sbin"].flatMap { directory -> [String] in
+      let binaryDirectory = URL(fileURLWithPath: prefix).appendingPathComponent(directory).path
+      guard let entries = try? context.fileManager.contentsOfDirectory(atPath: binaryDirectory)
+      else { return [] }
+      return entries.compactMap { entry -> String? in
+        let path = URL(fileURLWithPath: binaryDirectory).appendingPathComponent(entry).path
+        let resolved = PathSafety.canonical(path)
+        return resolved.hasPrefix(packageRoot + "/") ? path : nil
+      }
     }.sorted()
   }
 
   private func scanCargo() -> ProviderResult {
     guard
-      let cargo = context.resolveExecutable(
+      let cargo = context.resolveTrustedExecutable(
         "cargo",
         fallbacks: [context.homeDirectory + "/.cargo/bin"]
       )
@@ -160,7 +161,12 @@ public final class InventoryScanner {
 
     func makeRecord() -> PackageRecord? {
       guard let name = currentName else { return nil }
-      let paths = binaries.map { context.homeDirectory + "/.cargo/bin/" + $0 }
+      let installRoot =
+        context.environment["CARGO_INSTALL_ROOT"]
+        ?? context.environment["CARGO_HOME"]
+        ?? context.homeDirectory + "/.cargo"
+      let paths = binaries.map { installRoot + "/bin/" + $0 }
+        .filter { PathSafety.objectExists(at: $0) }
       return PackageRecord(
         id: "cargo:\(name)", name: name, version: currentVersion, manager: .cargo,
         binaries: paths,
@@ -188,7 +194,7 @@ public final class InventoryScanner {
   }
 
   private func scanNPM() -> ProviderResult {
-    guard let npm = context.resolveExecutable("npm") else { return ProviderResult() }
+    guard let npm = context.resolveTrustedExecutable("npm") else { return ProviderResult() }
     let list = context.runner.run(npm, ["list", "--global", "--depth=0", "--json"])
     guard list.status == 0 || !list.stdout.isEmpty,
       let data = list.stdout.data(using: .utf8),
@@ -202,6 +208,11 @@ public final class InventoryScanner {
 
     let prefixOutput = context.runner.run(npm, ["prefix", "--global"])
     let prefix = prefixOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard prefixOutput.status == 0, prefix.hasPrefix("/") else {
+      return ProviderResult(warnings: [
+        ScanWarning(provider: "npm", message: cleanError(prefixOutput.stderr))
+      ])
+    }
     let binDirectory = URL(fileURLWithPath: prefix).appendingPathComponent("bin").path
     let entries = (try? context.fileManager.contentsOfDirectory(atPath: binDirectory)) ?? []
     let records = dependencies.keys.sorted().map { name -> PackageRecord in
@@ -225,7 +236,7 @@ public final class InventoryScanner {
   }
 
   private func scanPipx() -> ProviderResult {
-    guard let pipx = context.resolveExecutable("pipx") else { return ProviderResult() }
+    guard let pipx = context.resolveTrustedExecutable("pipx") else { return ProviderResult() }
     let output = context.runner.run(pipx, ["list", "--json"])
     guard output.status == 0,
       let data = output.stdout.data(using: .utf8),
@@ -237,15 +248,36 @@ public final class InventoryScanner {
       ])
     }
     let records = venvs.keys.sorted().map { name -> PackageRecord in
-      let appDirectory = context.homeDirectory + "/.local/bin"
+      let appDirectory = providerDirectory(
+        executable: pipx,
+        environmentKey: "PIPX_BIN_DIR",
+        arguments: ["environment", "--value", "PIPX_BIN_DIR"],
+        fallback: context.homeDirectory + "/.local/bin"
+      )
       let entries = (try? context.fileManager.contentsOfDirectory(atPath: appDirectory)) ?? []
-      let venvRoot = context.homeDirectory + "/.local/share/pipx/venvs/\(name)"
-      let binaries = entries.compactMap { entry -> String? in
+      let venvsDirectory = providerDirectory(
+        executable: pipx,
+        environmentKey: "PIPX_LOCAL_VENVS",
+        arguments: ["environment", "--value", "PIPX_LOCAL_VENVS"],
+        fallback: context.homeDirectory + "/.local/share/pipx/venvs"
+      )
+      let venv = venvs[name] as? [String: Any]
+      let metadata = venv?["metadata"] as? [String: Any]
+      let mainPackage = metadata?["main_package"] as? [String: Any]
+      let declaredApps = mainPackage?["apps"] as? [String] ?? []
+      let venvRoot = venvsDirectory + "/\(name)"
+      let binaries = (declaredApps.isEmpty ? entries : declaredApps).compactMap {
+        entry -> String? in
         let path = appDirectory + "/" + entry
-        return PathSafety.canonical(path).hasPrefix(venvRoot + "/") ? path : nil
+        guard PathSafety.objectExists(at: path) else { return nil }
+        if !declaredApps.isEmpty { return path }
+        return PathSafety.canonical(path).hasPrefix(PathSafety.canonical(venvRoot) + "/")
+          ? path : nil
       }
       return PackageRecord(
-        id: "pipx:\(name)", name: name, manager: .pipx,
+        id: "pipx:\(name)", name: name,
+        version: mainPackage?["package_version"] as? String,
+        manager: .pipx,
         binaries: binaries,
         artifacts: binaries.map { binaryArtifact($0, source: "pipx") },
         uninstallCommand: [pipx, "uninstall", name]
@@ -255,26 +287,51 @@ public final class InventoryScanner {
   }
 
   private func scanUV() -> ProviderResult {
-    guard let uv = context.resolveExecutable("uv") else { return ProviderResult() }
+    guard let uv = context.resolveTrustedExecutable("uv") else { return ProviderResult() }
     let output = context.runner.run(uv, ["tool", "list"])
     guard output.status == 0 else {
       return ProviderResult(warnings: [
         ScanWarning(provider: "uv", message: cleanError(output.stderr))
       ])
     }
+    let binDirectory = providerDirectory(
+      executable: uv,
+      environmentKey: "UV_TOOL_BIN_DIR",
+      arguments: ["tool", "dir", "--bin"],
+      fallback: context.homeDirectory + "/.local/bin"
+    )
     var records: [PackageRecord] = []
-    for line in output.stdout.components(separatedBy: .newlines)
-    where !line.hasPrefix("-") && !line.hasPrefix(" ") {
-      let parts = line.split(separator: " ").map(String.init)
-      guard let name = parts.first, !name.isEmpty else { continue }
-      records.append(
-        PackageRecord(
-          id: "uv:\(name)", name: name,
-          version: parts.dropFirst().first,
-          manager: .uv,
-          uninstallCommand: [uv, "tool", "uninstall", name]
-        ))
+    var currentName: String?
+    var currentVersion: String?
+    var apps: [String] = []
+
+    func makeRecord() -> PackageRecord? {
+      guard let name = currentName, !apps.isEmpty else { return nil }
+      let binaries = apps.map { binDirectory + "/" + $0 }
+        .filter { PathSafety.objectExists(at: $0) }
+      return PackageRecord(
+        id: "uv:\(name)", name: name, version: currentVersion, manager: .uv,
+        binaries: binaries,
+        artifacts: binaries.map { binaryArtifact($0, source: "uv") },
+        uninstallCommand: [uv, "tool", "uninstall", name]
+      )
     }
+
+    for rawLine in output.stdout.components(separatedBy: .newlines) {
+      let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !line.isEmpty else { continue }
+      if line.hasPrefix("-") {
+        let app = line.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines)
+        if !app.isEmpty { apps.append(app) }
+        continue
+      }
+      if let record = makeRecord() { records.append(record) }
+      let parts = line.split(separator: " ").map(String.init)
+      currentName = parts.first
+      currentVersion = parts.dropFirst().first
+      apps = []
+    }
+    if let record = makeRecord() { records.append(record) }
     return ProviderResult(packages: records)
   }
 
@@ -296,7 +353,7 @@ public final class InventoryScanner {
         guard context.fileManager.isExecutableFile(atPath: path),
           !claimed.contains(PathSafety.canonical(path))
         else { continue }
-        let rule = rules.matchingExecutable(path)
+        let rule = rules.matchingExecutable(path, home: context.homeDirectory)
         let name = rule?.id ?? entry
         let id =
           rule.map { "manual:\($0.id)" }
@@ -319,7 +376,11 @@ public final class InventoryScanner {
 
   private func associateData(_ original: PackageRecord) -> PackageRecord {
     var package = original
-    let rule = rules.matching(packageName: package.name, binaries: package.binaries)
+    let rule = rules.matching(
+      packageName: package.name,
+      binaries: package.binaries,
+      home: context.homeDirectory
+    )
     if let rule {
       package.displayName = rule.displayName
       for dataPath in rule.dataPaths {
@@ -466,7 +527,15 @@ public final class InventoryScanner {
   }
 
   private func plistMetadata(at path: String) -> (label: String, program: String)? {
-    guard let plutil = context.resolveExecutable("plutil", fallbacks: ["/usr/bin"]),
+    let plutil = "/usr/bin/plutil"
+    guard
+      TrustedExecutable.isAllowed(
+        plutil,
+        named: "plutil",
+        home: context.homeDirectory,
+        environment: context.environment,
+        fileManager: context.fileManager
+      ),
       context.fileManager.isReadableFile(atPath: path)
     else { return nil }
     let output = context.runner.run(plutil, ["-convert", "json", "-o", "-", path])
@@ -493,5 +562,22 @@ public final class InventoryScanner {
   private func cleanError(_ value: String) -> String {
     let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return cleaned.isEmpty ? "Provider returned no usable data" : cleaned
+  }
+
+  private func providerDirectory(
+    executable: String,
+    environmentKey: String,
+    arguments: [String],
+    fallback: String
+  ) -> String {
+    if let configured = context.environment[environmentKey], configured.hasPrefix("/") {
+      return URL(fileURLWithPath: configured).standardizedFileURL.path
+    }
+    let output = context.runner.run(executable, arguments)
+    let value = output.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    if output.status == 0, value.hasPrefix("/") {
+      return URL(fileURLWithPath: value).standardizedFileURL.path
+    }
+    return fallback
   }
 }

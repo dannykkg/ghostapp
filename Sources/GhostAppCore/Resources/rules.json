@@ -4,7 +4,8 @@
       "id": "grok-build",
       "displayName": "Grok Build",
       "managerNames": ["grok-build"],
-      "executableNames": ["grok", "agent"],
+      "executableNames": ["grok"],
+      "executablePaths": ["$HOME/.grok/bin/agent"],
       "dataPaths": [
         {"path": "$HOME/.grok/bin", "kind": "installation", "sensitive": false},
         {"path": "$HOME/.grok/config.toml", "kind": "configuration", "sensitive": false},

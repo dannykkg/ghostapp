@@ -20,6 +20,10 @@ public struct RemovalPlanner {
         ))
     } else {
       for artifact in package.artifacts where artifact.kind == .executable && artifact.removable {
+        guard isAutomaticallyRemovable(artifact) else {
+          actions.append(manualReviewAction(for: artifact))
+          continue
+        }
         actions.append(
           RemovalAction(
             kind: .moveToTrash,
@@ -36,14 +40,10 @@ public struct RemovalPlanner {
       if artifact.kind == .executable { continue }
       estimatedBytes += artifact.sizeBytes ?? 0
 
-      if artifact.kind == .shellConfiguration || !artifact.removable {
-        actions.append(
-          RemovalAction(
-            kind: .manualReview,
-            description: "Review \(artifact.kind.rawValue) manually",
-            path: artifact.path,
-            sensitive: artifact.sensitive
-          ))
+      if artifact.kind == .shellConfiguration || !artifact.removable
+        || !isAutomaticallyRemovable(artifact)
+      {
+        actions.append(manualReviewAction(for: artifact))
         continue
       }
 
@@ -91,6 +91,20 @@ public struct RemovalPlanner {
     case .full:
       return artifact.kind != .executable
     }
+  }
+
+  private func isAutomaticallyRemovable(_ artifact: Artifact) -> Bool {
+    artifact.confidence == .certain || artifact.confidence == .high
+  }
+
+  private func manualReviewAction(for artifact: Artifact) -> RemovalAction {
+    RemovalAction(
+      kind: .manualReview,
+      description:
+        "Review \(artifact.kind.rawValue) manually (\(artifact.confidence.rawValue) confidence)",
+      path: artifact.path,
+      sensitive: artifact.sensitive
+    )
   }
 }
 
@@ -140,6 +154,7 @@ public final class RemovalExecutor {
         completed.append(action)
       } catch {
         failed.append(ActionFailure(action: action, error: error.localizedDescription))
+        if action.kind == .runCommand { break }
       }
     }
 
@@ -153,9 +168,13 @@ public final class RemovalExecutor {
   }
 
   private func validateCommand(_ executable: String) throws {
-    let allowedNames = Set(["brew", "cargo", "npm", "pipx", "uv", "launchctl"])
-    let name = URL(fileURLWithPath: executable).lastPathComponent
-    guard allowedNames.contains(name), context.fileManager.isExecutableFile(atPath: executable)
+    guard
+      TrustedExecutable.isAllowed(
+        executable,
+        home: context.homeDirectory,
+        environment: context.environment,
+        fileManager: context.fileManager
+      )
     else {
       throw RemovalError.unsafeCommand(executable)
     }
@@ -170,7 +189,7 @@ public final class RemovalExecutor {
   }
 
   private func moveToTrash(_ path: String, root: String) throws {
-    guard context.fileManager.fileExists(atPath: path) else { return }
+    guard PathSafety.objectExists(at: path) else { throw RemovalError.pathNotFound(path) }
     guard PathSafety.isSafeUserRemovalPath(path, home: context.homeDirectory) else {
       throw RemovalError.unsafePath(path)
     }
@@ -192,6 +211,7 @@ public final class RemovalExecutor {
 public enum RemovalError: LocalizedError {
   case unsafePath(String)
   case unsafeCommand(String)
+  case pathNotFound(String)
   case invalidAction(String)
   case commandFailed(String)
 
@@ -199,6 +219,7 @@ public enum RemovalError: LocalizedError {
     switch self {
     case .unsafePath(let path): "Refusing unsafe removal path: \(path)"
     case .unsafeCommand(let command): "Refusing unsafe command: \(command)"
+    case .pathNotFound(let path): "Removal target no longer exists: \(path)"
     case .invalidAction(let message): "Invalid removal action: \(message)"
     case .commandFailed(let message):
       "Command failed: \(message.isEmpty ? "unknown error" : message)"

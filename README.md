@@ -4,7 +4,7 @@
 
 GhostApp 用来发现那些不会出现在“应用程序”目录里的工具：Homebrew Formula、全局 npm/Cargo/pipx/uv 工具、通过安装脚本写入用户目录的二进制，以及它们留下的配置、缓存、日志、会话和后台服务。
 
-> 当前版本：`0.1.0`（MVP）。默认只生成清理计划；执行时，关联的用户文件会移动到废纸篓，不会被永久删除。
+> 当前版本：`0.1.1`（MVP）。默认只生成清理计划；执行时，关联的用户文件会移动到废纸篓，不会被永久删除。
 
 ## 为什么做 GhostApp
 
@@ -34,7 +34,7 @@ curl ... | sh
 | Homebrew Formula/Cask | 已支持 |
 | Cargo、npm、pipx、uv 全局工具 | 已支持 |
 | 常见用户级 `bin` 目录 | 已支持 |
-| XDG 与 macOS 常见数据目录 | 已支持，约定路径标记为中等可信度 |
+| XDG 与 macOS 常见数据目录 | 已支持；约定路径标记为中等可信度，只进入人工检查 |
 | LaunchAgent/LaunchDaemon 关联 | 已支持扫描；系统级项目默认仅提示 |
 | Shell PATH 引用 | 已支持检测；默认不自动改写配置文件 |
 | 已知软件深度规则 | 已支持，当前内置 Grok Build 规则 |
@@ -151,7 +151,7 @@ ghostapp scan --output inventory.json
 scan / inspect → plan → 向用户展示计划 → 获得明确授权 → remove
 ```
 
-自动化程序不应根据 JSON 中的路径自行拼接 `rm`，而应让 GhostApp 执行它生成并验证过的计划。完整字段和安全约定见 [AI Integration Contract](docs/AI_INTEGRATION.md)。
+自动化程序不应根据 JSON 中的路径自行拼接 `rm`，而应让 GhostApp 执行清理并重新校验命令与路径。完整字段和安全约定见 [AI Integration Contract](docs/AI_INTEGRATION.md)。
 
 退出码：
 
@@ -172,8 +172,11 @@ scan / inspect → plan → 向用户展示计划 → 获得明确授权 → rem
 - 真正执行必须同时使用 `--execute --yes`；
 - 用户数据移入废纸篓，不执行递归永久删除；
 - 系统级文件和 Shell 配置默认只进入人工检查；
-- 包管理器卸载命令来自内部 Provider，并受可执行程序白名单限制；
-- 所有自动移动路径都必须通过用户目录安全校验。
+- 包管理器卸载命令来自内部 Provider；其可执行文件必须来自受信任的系统或用户级安装根目录；
+- 所有自动移动路径都必须通过父目录软链接解析和用户目录边界校验；
+- 中、低可信度关联不会自动删除；
+- 包管理器或 `launchctl` 失败后停止后续关联数据清理；
+- 外部命令带超时，并限制读取到执行报告中的输出大小。
 
 安全问题与隐私注意事项见 [SECURITY.md](SECURITY.md)。公开 Issue 中请勿粘贴 Token、会话正文、未脱敏的主目录路径或完整扫描 JSON。
 
@@ -183,6 +186,9 @@ scan / inspect → plan → 向用户展示计划 → 获得明确授权 → rem
 - 通用目录关联依赖精确名称约定，可能出现漏报；
 - Rustup 等由大量 shim 组成的工具链，目前可能显示为多个手工二进制；
 - 系统级卸载仍需要人工审查和管理员授权；
+- `plan` 与 `remove` 当前会分别重新扫描，尚未提供冻结计划或 plan hash；
+- 废纸篓移动尚无 transaction manifest/自动 `undo`，恢复需要在废纸篓中手工完成；
+- `inspect` 的 JSON 当前直接返回 `PackageRecord`，尚未使用统一的顶级 envelope；
 - 暂不追踪安装前后的文件系统变化；
 - 当前没有预编译 Release、签名公证产物或 Homebrew Formula。
 

@@ -4,7 +4,7 @@ import GhostAppCore
 
 @main
 struct GhostAppCLI {
-  static let version = "0.1.0"
+  static let version = "0.1.1"
 
   static func main() {
     do {
@@ -234,7 +234,7 @@ private func doctor() -> DoctorReport {
     case "plutil": fallback = ["/usr/bin"]
     default: fallback = []
     }
-    let path = context.resolveExecutable(name, fallbacks: fallback)
+    let path = context.resolveTrustedExecutable(name, fallbacks: fallback)
     return DoctorCheck(name: name, available: path != nil, path: path)
   }
   return DoctorReport(
