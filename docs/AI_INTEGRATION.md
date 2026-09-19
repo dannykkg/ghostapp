@@ -32,7 +32,7 @@ ghostapp apply plan.json --execute --yes --compact
 
 ```json
 {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "generatedAt": "2026-09-18T00:00:00Z",
   "host": "MacBook",
   "packages": [],
@@ -63,6 +63,7 @@ Artifact 的关键语义：
 
 - `status`: `healthy | needs-review | warning | danger`；
 - `items[].level`: `info | review | warning | orphaned | dangerous`；
+- `items[].summary` 是适合人类显示的短说明，`detail` 和 `path` 保留完整机器证据；
 - `review` 只表示需要人工确认，不能描述成确定异常；
 - macOS Cryptex 等动态系统 PATH 项降级为 `info`，避免自动化误报。
 

@@ -5,37 +5,72 @@ private struct ProviderResult {
   var warnings: [ScanWarning] = []
 }
 
+public struct InventoryScanProgress: Sendable, Equatable {
+  public let step: Int
+  public let total: Int
+  public let label: String
+
+  public init(step: Int, total: Int, label: String) {
+    self.step = step
+    self.total = total
+    self.label = label
+  }
+}
+
 public final class InventoryScanner {
   private let context: ScanContext
   private let rules: RuleRegistry
+  private let progress: ((InventoryScanProgress) -> Void)?
 
-  public init(context: ScanContext = ScanContext(), rules: RuleRegistry = .bundled()) {
+  public init(
+    context: ScanContext = ScanContext(),
+    rules: RuleRegistry = .bundled(),
+    progress: ((InventoryScanProgress) -> Void)? = nil
+  ) {
     self.context = context
     self.rules = rules
+    self.progress = progress
   }
 
   public func scan() -> Inventory {
     var packages: [PackageRecord] = []
     var warnings: [ScanWarning] = []
 
-    for result in [scanHomebrew(), scanRustup(), scanCargo(), scanNPM(), scanPipx(), scanUV()] {
+    func append(_ result: ProviderResult) {
       packages.append(contentsOf: result.packages)
       warnings.append(contentsOf: result.warnings)
     }
 
+    report(1, "Scanning Homebrew packages")
+    append(scanHomebrew())
+    report(2, "Scanning Rust toolchains")
+    append(scanRustup())
+    report(3, "Scanning Cargo tools")
+    append(scanCargo())
+    report(4, "Scanning npm global tools")
+    append(scanNPM())
+    report(5, "Scanning pipx applications")
+    append(scanPipx())
+    report(6, "Scanning uv tools")
+    append(scanUV())
+
+    report(7, "Scanning user executable directories")
     let claimed = Set(packages.flatMap(\.binaries).map(PathSafety.canonical))
     let manual = scanManualBinaries(excluding: claimed)
     packages.append(contentsOf: manual.packages)
     warnings.append(contentsOf: manual.warnings)
 
+    report(8, "Associating data, services, and shell configuration")
     packages = packages.map(associateData)
     packages = associateLaunchServices(packages)
     packages = packages.map(associateShellConfiguration)
     packages = deduplicate(packages)
+    report(9, "Evaluating findings and duplicate commands")
     let findings = scanFindings(packages: packages)
     let duplicateProducts = InventoryAnalyzer.duplicateProducts(
       packages: packages, context: context)
 
+    report(10, "Preparing report")
     let host = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     return Inventory(
       host: host,
@@ -48,6 +83,10 @@ public final class InventoryScanner {
       findings: findings,
       duplicateProducts: duplicateProducts
     )
+  }
+
+  private func report(_ step: Int, _ label: String) {
+    progress?(InventoryScanProgress(step: step, total: 10, label: label))
   }
 
   private func scanHomebrew() -> ProviderResult {

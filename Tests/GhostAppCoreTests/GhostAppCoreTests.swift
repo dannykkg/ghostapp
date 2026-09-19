@@ -656,6 +656,33 @@ struct GhostAppCoreTests {
     #expect(assessment.counts.review == 1)
     #expect(assessment.counts.warning == 0)
     #expect(assessment.items.first { $0.path?.contains("cryptexd") == true }?.level == .info)
+    #expect(
+      assessment.items.first { $0.path?.contains("cryptexd") == true }?.summary.contains(
+        "no cleanup") == true)
+    #expect(assessment.items.first { $0.level == .review }?.title == "Demo background service")
+  }
+
+  @Test("Scanner reports ordered progress stages")
+  func scanProgress() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    var updates: [InventoryScanProgress] = []
+    let context = ScanContext(
+      homeDirectory: home,
+      environment: ["PATH": ""],
+      runner: StubRunner()
+    )
+
+    _ = InventoryScanner(
+      context: context,
+      rules: RuleRegistry(rules: []),
+      progress: { updates.append($0) }
+    ).scan()
+
+    #expect(updates.map(\.step) == Array(1...10))
+    #expect(updates.allSatisfy { $0.total == 10 })
+    #expect(updates.first?.label.contains("Homebrew") == true)
+    #expect(updates.last?.label == "Preparing report")
   }
 
   @Test("Confirmed stale paths and orphaned services raise warning status")
@@ -685,7 +712,9 @@ struct GhostAppCoreTests {
     #expect(assessment.counts.orphaned == 1)
     let inventory = Inventory(host: "test", packages: [], assessment: assessment)
     let json = try JSONOutput.encode(inventory, pretty: false)
+    #expect(inventory.schemaVersion == "1.3")
     #expect(json.contains("\"assessment\""))
+    #expect(json.contains("\"summary\""))
     #expect(json.contains("\"status\":\"warning\""))
   }
 

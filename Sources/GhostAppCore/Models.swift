@@ -190,6 +190,7 @@ public enum InventoryStatus: String, Codable, Sendable {
 public struct AssessmentItem: Codable, Hashable, Sendable {
   public let level: AssessmentLevel
   public let title: String
+  public let summary: String
   public let detail: String
   public let path: String?
   public let packageID: String?
@@ -198,6 +199,7 @@ public struct AssessmentItem: Codable, Hashable, Sendable {
   public init(
     level: AssessmentLevel,
     title: String,
+    summary: String,
     detail: String,
     path: String? = nil,
     packageID: String? = nil,
@@ -205,6 +207,7 @@ public struct AssessmentItem: Codable, Hashable, Sendable {
   ) {
     self.level = level
     self.title = title
+    self.summary = summary
     self.detail = detail
     self.path = path
     self.packageID = packageID
@@ -299,7 +302,7 @@ public struct Inventory: Codable, Sendable {
   public var assessment: InventoryAssessment
 
   public init(
-    schemaVersion: String = "1.2",
+    schemaVersion: String = "1.3",
     generatedAt: Date = Date(),
     host: String,
     packages: [PackageRecord],

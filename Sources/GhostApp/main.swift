@@ -4,7 +4,7 @@ import GhostAppCore
 
 @main
 struct GhostAppCLI {
-  static let version = "0.2.1"
+  static let version = "0.2.2"
 
   static func main() {
     do {
@@ -31,16 +31,20 @@ struct GhostAppCLI {
       print("ghostapp \(version)")
     case "scan", "list":
       let options = try ScanOptions(rest)
-      let inventory = InventoryScanner().scan()
+      let inventory = scanInventory(showProgress: !options.common.json)
       if options.common.json {
         try emit(inventory, options: options.common)
       } else {
-        printScanSummary(inventory, showInfo: options.showInfo || options.showAll)
+        printScanSummary(
+          inventory,
+          showInfo: options.showInfo,
+          showDetails: options.showDetails
+        )
         if options.showAll { printInventoryDetails(inventory) }
       }
     case "duplicates":
       let options = try CommonOptions(rest)
-      let products = InventoryScanner().scan().duplicateProducts
+      let products = scanInventory(showProgress: !options.json).duplicateProducts
       if options.json {
         try emit(products, options: options)
       } else {
@@ -48,7 +52,7 @@ struct GhostAppCLI {
       }
     case "inspect":
       let parsed = try QueryOptions(rest)
-      let inventory = InventoryScanner().scan()
+      let inventory = scanInventory(showProgress: !parsed.common.json)
       let package = try resolve(parsed.query, in: inventory)
       if parsed.common.json {
         try emit(package, options: parsed.common)
@@ -57,7 +61,7 @@ struct GhostAppCLI {
       }
     case "plan":
       let parsed = try RemovalOptions(rest, allowsExecution: false)
-      let inventory = InventoryScanner().scan()
+      let inventory = scanInventory(showProgress: !parsed.common.json)
       let package = try resolve(parsed.query, in: inventory)
       let plan = RemovalPlanner().plan(
         package: package,
@@ -74,7 +78,7 @@ struct GhostAppCLI {
       if parsed.execute && !parsed.yes {
         throw CLIError("--execute requires --yes", code: 2)
       }
-      let inventory = InventoryScanner().scan()
+      let inventory = scanInventory(showProgress: !parsed.common.json)
       let package = try resolve(parsed.query, in: inventory)
       let plan = RemovalPlanner().plan(
         package: package,
@@ -186,17 +190,20 @@ private struct CommonOptions {
 private struct ScanOptions {
   let showAll: Bool
   let showInfo: Bool
+  let showDetails: Bool
   let common: CommonOptions
 
   init(_ arguments: [String]) throws {
     var showAll = false
     var showInfo = false
+    var showDetails = false
     var commonArguments: [String] = []
     var index = 0
     while index < arguments.count {
       switch arguments[index] {
       case "--all": showAll = true
       case "--show-info": showInfo = true
+      case "--details": showDetails = true
       case "--json", "--compact": commonArguments.append(arguments[index])
       case "--output":
         commonArguments.append(arguments[index])
@@ -209,6 +216,7 @@ private struct ScanOptions {
     }
     self.showAll = showAll
     self.showInfo = showInfo
+    self.showDetails = showDetails
     self.common = try CommonOptions(commonArguments)
   }
 }
@@ -333,6 +341,37 @@ private struct DoctorReport: Codable {
   }
 }
 
+private final class ScanProgressRenderer {
+  private let enabled: Bool
+  private let startedAt = Date()
+
+  init(enabled: Bool) {
+    self.enabled = enabled && isatty(STDERR_FILENO) != 0
+  }
+
+  func update(_ progress: InventoryScanProgress) {
+    guard enabled else { return }
+    fputs(
+      "\r[\(progress.step)/\(progress.total)] \(progress.label)…\u{001B}[K",
+      stderr
+    )
+    fflush(stderr)
+  }
+
+  func finish() {
+    guard enabled else { return }
+    let elapsed = Date().timeIntervalSince(startedAt)
+    fputs("\r✓ Scan completed in \(String(format: "%.1f", elapsed))s.\u{001B}[K]\n", stderr)
+    fflush(stderr)
+  }
+}
+
+private func scanInventory(showProgress: Bool) -> Inventory {
+  let renderer = ScanProgressRenderer(enabled: showProgress)
+  defer { renderer.finish() }
+  return InventoryScanner(progress: renderer.update).scan()
+}
+
 private func doctor() -> DoctorReport {
   let context = ScanContext()
   let names = ["brew", "rustup", "cargo", "npm", "pipx", "uv", "plutil"]
@@ -394,7 +433,11 @@ private func decodeJSONFile<T: Decodable>(_ path: String) throws -> T {
   }
 }
 
-private func printScanSummary(_ inventory: Inventory, showInfo: Bool) {
+private func printScanSummary(
+  _ inventory: Inventory,
+  showInfo: Bool,
+  showDetails: Bool
+) {
   let assessment = inventory.assessment
   let statistics = assessment.statistics
   let counts = assessment.counts
@@ -426,14 +469,38 @@ private func printScanSummary(_ inventory: Inventory, showInfo: Bool) {
     print("\nNo actionable anomalies detected.")
   } else {
     print("\nAssessment")
-    for item in visible {
-      print("  \(levelLabel(item.level))  \(item.title)")
-      if let path = item.path { print("          \(path)") }
-      print("          \(item.detail) [\(item.confidence.rawValue)]")
+    if showDetails {
+      for item in visible {
+        print("  \(levelLabel(item.level))  \(item.title)")
+        if let path = item.path { print("          \(path)") }
+        print("          \(item.detail) [\(item.confidence.rawValue)]")
+      }
+    } else {
+      for group in assessmentGroups(visible) {
+        let count = group.count > 1 ? " ×\(group.count)" : ""
+        print("  \(levelLabel(group.item.level))  \(group.item.title)\(count)")
+        print("          \(group.item.summary)")
+      }
     }
   }
-  print("\nUse 'ghostapp scan --all' for the complete package inventory.")
+  print("\nUse 'ghostapp scan --details' for full paths and evidence.")
+  print("Use 'ghostapp scan --all' for the complete package inventory.")
   print("Use 'ghostapp scan --compact' for deterministic JSON suitable for AI.")
+}
+
+private func assessmentGroups(_ items: [AssessmentItem]) -> [(item: AssessmentItem, count: Int)] {
+  var groups: [(item: AssessmentItem, count: Int)] = []
+  for item in items {
+    if let index = groups.firstIndex(where: {
+      $0.item.level == item.level && $0.item.title == item.title
+        && $0.item.summary == item.summary
+    }) {
+      groups[index].count += 1
+    } else {
+      groups.append((item: item, count: 1))
+    }
+  }
+  return groups
 }
 
 private func printInventoryDetails(_ inventory: Inventory) {
@@ -562,8 +629,8 @@ private func printHelp() {
     ghostapp \(GhostAppCLI.version) — inventory and deeply uninstall non-.app macOS software
 
     USAGE
-      ghostapp scan [--all] [--show-info] [--json|--compact] [--output FILE]
-      ghostapp list [--all] [--show-info] [--json|--compact]
+      ghostapp scan [--all] [--show-info] [--details] [--json|--compact] [--output FILE]
+      ghostapp list [--all] [--show-info] [--details] [--json|--compact]
       ghostapp duplicates [--json|--compact]
       ghostapp inspect <name-or-id> [--json|--compact]
       ghostapp plan <name-or-id> [--mode program|cache|full] [--include-sensitive] [--json]

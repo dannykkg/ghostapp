@@ -4,7 +4,7 @@
 
 GhostApp 用来发现那些不会出现在“应用程序”目录里的工具：Homebrew Formula、全局 npm/Cargo/pipx/uv 工具、通过安装脚本写入用户目录的二进制，以及它们留下的配置、缓存、日志、会话和后台服务。
 
-> 当前版本：`0.2.1`。默认扫描输出面向人类，JSON 输出面向 AI/自动化；清理时关联文件会移动到废纸篓，并记录可撤销事务。
+> 当前版本：`0.2.2`。交互式扫描显示阶段进度，默认结果使用短摘要；JSON 输出面向 AI/自动化。
 
 ## 为什么做 GhostApp
 
@@ -83,12 +83,15 @@ ghostapp version
 ghostapp scan
 ```
 
-默认输出只展示总体状态、统计和需要关注的项目。查看完整软件清单或系统信息项：
+默认输出只展示总体状态、统计和需要关注的项目，不展开主目录、launchd 程序路径或冗长证据。查看系统信息、完整证据或软件清单：
 
 ```bash
-ghostapp scan --all
 ghostapp scan --show-info
+ghostapp scan --details
+ghostapp scan --all
 ```
+
+交互式终端会在扫描期间显示当前阶段，例如 Homebrew、npm、用户级二进制、数据关联和异常评估。JSON/重定向模式不写进度，保证机器输出纯净。
 
 分类由本地确定性规则完成，不需要联网或调用 AI：
 

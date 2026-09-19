@@ -11,6 +11,7 @@ public enum InventoryAnalyzer {
       AssessmentItem(
         level: .warning,
         title: "Scanner provider warning",
+        summary: "The \($0.provider) provider could not return a complete inventory.",
         detail: "\($0.provider): \($0.message)",
         confidence: .certain
       )
@@ -19,28 +20,35 @@ public enum InventoryAnalyzer {
     items += findings.map { finding in
       let level: AssessmentLevel
       let title: String
+      let summary: String
       switch finding.kind {
       case .brokenSymlink:
         level = .warning
         title = "Broken symbolic link"
+        summary = "The link target no longer exists and can be reviewed for cleanup."
       case .orphanLaunchService:
         level = .orphaned
-        title = "Orphaned launch service"
+        title = "\(launchServiceName(finding.path)) background service"
+        summary = "The service points to a missing program and is likely leftover."
       case .unclaimedLaunchService:
         level = .review
-        title = "Unclassified launch service"
+        title = "\(launchServiceName(finding.path)) background service"
+        summary = "Program exists, but ownership is unconfirmed; no cleanup is suggested."
       case .stalePathEntry:
         if isDynamicSystemPath(finding.path) {
           level = .info
-          title = "Dynamic system PATH entry is currently unavailable"
+          title = "macOS dynamic PATH entry"
+          summary = "A system-managed path is unavailable in this session; no cleanup is suggested."
         } else {
           level = .warning
           title = "Stale PATH entry"
+          summary = "The PATH entry points to a directory that no longer exists."
         }
       }
       return AssessmentItem(
         level: level,
         title: title,
+        summary: summary,
         detail: finding.detail,
         path: finding.path,
         confidence: finding.confidence
@@ -51,6 +59,8 @@ public enum InventoryAnalyzer {
       AssessmentItem(
         level: .warning,
         title: "Duplicate command installation",
+        summary:
+          "Multiple installations expose \(product.identity); review which version should remain active.",
         detail:
           "\(product.identity) has \(product.installations.count) installations; PATH selects \(product.activeBinary ?? "none").",
         path: product.activeBinary,
@@ -159,6 +169,25 @@ public enum InventoryAnalyzer {
     path.hasPrefix("/var/run/com.apple.security.cryptexd/")
       || path.hasPrefix("/System/Cryptexes/")
       || path == "/pkg/env/global/bin"
+  }
+
+  private static func launchServiceName(_ path: String) -> String {
+    let stem = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    let ignored = Set(["com", "org", "net", "io", "github", "service", "wake", "agent", "daemon"])
+    let candidates = stem.split(separator: ".").map(String.init).filter {
+      !ignored.contains($0.lowercased())
+    }
+    let raw = candidates.last ?? stem
+    let spaced =
+      raw
+      .replacingOccurrences(of: "-", with: " ")
+      .replacingOccurrences(of: "_", with: " ")
+      .replacingOccurrences(
+        of: "([a-z0-9])([A-Z])",
+        with: "$1 $2",
+        options: .regularExpression
+      )
+    return spaced.capitalized
   }
 
   private static func severity(_ level: AssessmentLevel) -> Int {
