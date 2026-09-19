@@ -32,13 +32,19 @@ ghostapp apply plan.json --execute --yes --compact
 
 ```json
 {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "generatedAt": "2026-09-18T00:00:00Z",
   "host": "MacBook",
   "packages": [],
   "warnings": [],
   "findings": [],
-  "duplicateProducts": []
+  "duplicateProducts": [],
+  "assessment": {
+    "status": "healthy",
+    "statistics": {},
+    "counts": {},
+    "items": []
+  }
 }
 ```
 
@@ -53,6 +59,13 @@ Artifact 的关键语义：
 
 `directInstall` 为 `true` 表示显式安装，为 `false` 表示依赖，为 `null` 表示当前 Provider 无法可靠分类。`findings` 是断链、失效 PATH 或未归属 launchd 项等独立问题；它们不会自动转成删除动作。
 
+`assessment` 是 GhostApp 本地规则生成的结论，不依赖 AI：
+
+- `status`: `healthy | needs-review | warning | danger`；
+- `items[].level`: `info | review | warning | orphaned | dangerous`；
+- `review` 只表示需要人工确认，不能描述成确定异常；
+- macOS Cryptex 等动态系统 PATH 项降级为 `info`，避免自动化误报。
+
 ## 自动化安全规则
 
 1. 不把 `medium` 或 `low` 可信度结果描述成确定事实；
@@ -65,3 +78,4 @@ Artifact 的关键语义：
 8. 不直接复刻 JSON 中的路径执行 `rm`，应让 GhostApp 负责路径和命令校验。
 9. 优先把 `plan` 保存到文件并用 `apply` 执行；不要根据扫描结果重新构造动作。
 10. 保存真实执行返回的 `transactionID`。`undo` 只能恢复 Trash 文件移动，不能描述为重新安装包管理器软件。
+11. 优先采用 `assessment.status` 和 `assessment.items`；AI 可以补充解释，但不应把 `review` 擅自升级为异常。

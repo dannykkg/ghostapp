@@ -627,6 +627,68 @@ struct GhostAppCoreTests {
     #expect(product.installations.first { $0.binary == second }?.activeInPath == false)
   }
 
+  @Test("Health assessment downgrades dynamic system paths to information")
+  func systemPathAssessment() {
+    let assessment = InventoryAnalyzer.assessment(
+      packages: [
+        PackageRecord(id: "manual:demo", name: "demo", manager: .manual)
+      ],
+      warnings: [],
+      findings: [
+        InventoryFinding(
+          kind: .stalePathEntry,
+          path: "/var/run/com.apple.security.cryptexd/demo/bin",
+          confidence: .certain,
+          detail: "Unavailable dynamic path"
+        ),
+        InventoryFinding(
+          kind: .unclaimedLaunchService,
+          path: "/Library/LaunchDaemons/demo.plist",
+          confidence: .low,
+          detail: "Program still exists"
+        ),
+      ],
+      duplicateProducts: []
+    )
+
+    #expect(assessment.status == .needsReview)
+    #expect(assessment.counts.info == 1)
+    #expect(assessment.counts.review == 1)
+    #expect(assessment.counts.warning == 0)
+    #expect(assessment.items.first { $0.path?.contains("cryptexd") == true }?.level == .info)
+  }
+
+  @Test("Confirmed stale paths and orphaned services raise warning status")
+  func actionableAssessment() throws {
+    let assessment = InventoryAnalyzer.assessment(
+      packages: [],
+      warnings: [],
+      findings: [
+        InventoryFinding(
+          kind: .stalePathEntry,
+          path: "/Users/demo/.missing/bin",
+          confidence: .certain,
+          detail: "Directory is missing"
+        ),
+        InventoryFinding(
+          kind: .orphanLaunchService,
+          path: "/Users/demo/Library/LaunchAgents/demo.plist",
+          confidence: .high,
+          detail: "Program is missing"
+        ),
+      ],
+      duplicateProducts: []
+    )
+
+    #expect(assessment.status == .warning)
+    #expect(assessment.counts.warning == 1)
+    #expect(assessment.counts.orphaned == 1)
+    let inventory = Inventory(host: "test", packages: [], assessment: assessment)
+    let json = try JSONOutput.encode(inventory, pretty: false)
+    #expect(json.contains("\"assessment\""))
+    #expect(json.contains("\"status\":\"warning\""))
+  }
+
   @Test("Scanner reports broken links, stale PATH entries, and Antigravity state")
   func deepFindingsAndAntigravity() throws {
     let home = try temporaryHome()

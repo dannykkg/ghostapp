@@ -4,7 +4,7 @@ import GhostAppCore
 
 @main
 struct GhostAppCLI {
-  static let version = "0.2.0"
+  static let version = "0.2.1"
 
   static func main() {
     do {
@@ -30,12 +30,13 @@ struct GhostAppCLI {
     case "version", "--version", "-v":
       print("ghostapp \(version)")
     case "scan", "list":
-      let options = try CommonOptions(rest)
+      let options = try ScanOptions(rest)
       let inventory = InventoryScanner().scan()
-      if options.json {
-        try emit(inventory, options: options)
+      if options.common.json {
+        try emit(inventory, options: options.common)
       } else {
-        printInventory(inventory)
+        printScanSummary(inventory, showInfo: options.showInfo || options.showAll)
+        if options.showAll { printInventoryDetails(inventory) }
       }
     case "duplicates":
       let options = try CommonOptions(rest)
@@ -179,6 +180,36 @@ private struct CommonOptions {
     self.json = json
     self.compact = compact
     self.output = output
+  }
+}
+
+private struct ScanOptions {
+  let showAll: Bool
+  let showInfo: Bool
+  let common: CommonOptions
+
+  init(_ arguments: [String]) throws {
+    var showAll = false
+    var showInfo = false
+    var commonArguments: [String] = []
+    var index = 0
+    while index < arguments.count {
+      switch arguments[index] {
+      case "--all": showAll = true
+      case "--show-info": showInfo = true
+      case "--json", "--compact": commonArguments.append(arguments[index])
+      case "--output":
+        commonArguments.append(arguments[index])
+        index += 1
+        guard index < arguments.count else { throw CLIError("--output requires a path", code: 2) }
+        commonArguments.append(arguments[index])
+      default: throw CLIError("unexpected option '\(arguments[index])'", code: 2)
+      }
+      index += 1
+    }
+    self.showAll = showAll
+    self.showInfo = showInfo
+    self.common = try CommonOptions(commonArguments)
   }
 }
 
@@ -363,8 +394,50 @@ private func decodeJSONFile<T: Decodable>(_ path: String) throws -> T {
   }
 }
 
-private func printInventory(_ inventory: Inventory) {
-  print("GhostApp inventory · \(inventory.packages.count) packages")
+private func printScanSummary(_ inventory: Inventory, showInfo: Bool) {
+  let assessment = inventory.assessment
+  let statistics = assessment.statistics
+  let counts = assessment.counts
+  print("GhostApp scan · \(statusLabel(assessment.status))")
+  print(String(repeating: "-", count: 78))
+  print(
+    "✓ \(statistics.packages) packages recognized · \(statistics.directInstalls) direct · \(statistics.dependencies) dependencies · \(statistics.unclassified) unclassified"
+  )
+  if statistics.duplicateCommands == 0 {
+    print("✓ No duplicate commands")
+  } else {
+    print("! \(statistics.duplicateCommands) duplicate command(s)")
+  }
+  if counts.warning == 0 && counts.orphaned == 0 && counts.dangerous == 0 {
+    print("✓ No confirmed warnings, orphaned items, or dangerous findings")
+  } else {
+    if counts.dangerous > 0 { print("✗ \(counts.dangerous) dangerous finding(s)") }
+    if counts.orphaned > 0 { print("! \(counts.orphaned) orphaned item(s)") }
+    if counts.warning > 0 { print("! \(counts.warning) warning(s)") }
+  }
+  if counts.review > 0 { print("! \(counts.review) item(s) need review") }
+  if counts.info > 0 {
+    print(
+      "i \(counts.info) informational item(s)\(showInfo ? "" : " · use --show-info to display")")
+  }
+
+  let visible = assessment.items.filter { showInfo || $0.level != .info }
+  if visible.isEmpty {
+    print("\nNo actionable anomalies detected.")
+  } else {
+    print("\nAssessment")
+    for item in visible {
+      print("  \(levelLabel(item.level))  \(item.title)")
+      if let path = item.path { print("          \(path)") }
+      print("          \(item.detail) [\(item.confidence.rawValue)]")
+    }
+  }
+  print("\nUse 'ghostapp scan --all' for the complete package inventory.")
+  print("Use 'ghostapp scan --compact' for deterministic JSON suitable for AI.")
+}
+
+private func printInventoryDetails(_ inventory: Inventory) {
+  print("\nComplete package inventory")
   print(String(repeating: "-", count: 78))
   for package in inventory.packages {
     let version = package.version.map { " \($0)" } ?? ""
@@ -376,22 +449,25 @@ private func printInventory(_ inventory: Inventory) {
     )
     print("  \(package.binaries.count) binaries · \(package.artifacts.count) artifacts")
   }
-  if !inventory.warnings.isEmpty {
-    print("\nWarnings:")
-    for warning in inventory.warnings {
-      print("  \(warning.provider): \(warning.message)")
-    }
+}
+
+private func statusLabel(_ status: InventoryStatus) -> String {
+  switch status {
+  case .healthy: "HEALTHY"
+  case .needsReview: "NEEDS REVIEW"
+  case .warning: "WARNING"
+  case .danger: "DANGER"
   }
-  if !inventory.findings.isEmpty {
-    print("\nFindings:")
-    for finding in inventory.findings {
-      print("  [\(finding.kind.rawValue)] \(finding.path)")
-      print("    \(finding.detail)")
-    }
-  }
-  if !inventory.duplicateProducts.isEmpty {
-    print("\nDuplicate commands:")
-    printDuplicates(inventory.duplicateProducts)
+}
+
+private func levelLabel(_ level: AssessmentLevel) -> String {
+  switch level {
+  case .normal: "NORMAL   "
+  case .info: "INFO     "
+  case .review: "REVIEW   "
+  case .warning: "WARNING  "
+  case .orphaned: "ORPHANED "
+  case .dangerous: "DANGEROUS"
   }
 }
 
@@ -486,8 +562,8 @@ private func printHelp() {
     ghostapp \(GhostAppCLI.version) — inventory and deeply uninstall non-.app macOS software
 
     USAGE
-      ghostapp scan [--json|--compact] [--output FILE]
-      ghostapp list [--json|--compact]
+      ghostapp scan [--all] [--show-info] [--json|--compact] [--output FILE]
+      ghostapp list [--all] [--show-info] [--json|--compact]
       ghostapp duplicates [--json|--compact]
       ghostapp inspect <name-or-id> [--json|--compact]
       ghostapp plan <name-or-id> [--mode program|cache|full] [--include-sensitive] [--json]
@@ -507,7 +583,8 @@ private func printHelp() {
       undo restores Trash moves only; package-manager uninstall commands are not reversible.
 
     AI / AUTOMATION
-      Add --compact for deterministic one-line JSON. Exit codes: 0 success,
+      Human output is the default. Add --compact for deterministic one-line JSON.
+      Health classification is rule-based and does not require AI. Exit codes: 0 success,
       2 usage, 3 not found, 4 ambiguous, 10 execution failure.
     """)
 }

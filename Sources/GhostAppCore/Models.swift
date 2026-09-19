@@ -171,6 +171,113 @@ public struct SoftwareProduct: Codable, Hashable, Sendable {
   }
 }
 
+public enum AssessmentLevel: String, Codable, CaseIterable, Sendable {
+  case normal
+  case info
+  case review
+  case warning
+  case orphaned
+  case dangerous
+}
+
+public enum InventoryStatus: String, Codable, Sendable {
+  case healthy
+  case needsReview = "needs-review"
+  case warning
+  case danger
+}
+
+public struct AssessmentItem: Codable, Hashable, Sendable {
+  public let level: AssessmentLevel
+  public let title: String
+  public let detail: String
+  public let path: String?
+  public let packageID: String?
+  public let confidence: Confidence
+
+  public init(
+    level: AssessmentLevel,
+    title: String,
+    detail: String,
+    path: String? = nil,
+    packageID: String? = nil,
+    confidence: Confidence
+  ) {
+    self.level = level
+    self.title = title
+    self.detail = detail
+    self.path = path
+    self.packageID = packageID
+    self.confidence = confidence
+  }
+}
+
+public struct AssessmentCounts: Codable, Hashable, Sendable {
+  public let normal: Int
+  public let info: Int
+  public let review: Int
+  public let warning: Int
+  public let orphaned: Int
+  public let dangerous: Int
+
+  public init(
+    normal: Int = 0,
+    info: Int = 0,
+    review: Int = 0,
+    warning: Int = 0,
+    orphaned: Int = 0,
+    dangerous: Int = 0
+  ) {
+    self.normal = normal
+    self.info = info
+    self.review = review
+    self.warning = warning
+    self.orphaned = orphaned
+    self.dangerous = dangerous
+  }
+}
+
+public struct InventoryStatistics: Codable, Hashable, Sendable {
+  public let packages: Int
+  public let directInstalls: Int
+  public let dependencies: Int
+  public let unclassified: Int
+  public let duplicateCommands: Int
+
+  public init(
+    packages: Int,
+    directInstalls: Int,
+    dependencies: Int,
+    unclassified: Int,
+    duplicateCommands: Int
+  ) {
+    self.packages = packages
+    self.directInstalls = directInstalls
+    self.dependencies = dependencies
+    self.unclassified = unclassified
+    self.duplicateCommands = duplicateCommands
+  }
+}
+
+public struct InventoryAssessment: Codable, Sendable {
+  public let status: InventoryStatus
+  public let statistics: InventoryStatistics
+  public let counts: AssessmentCounts
+  public let items: [AssessmentItem]
+
+  public init(
+    status: InventoryStatus,
+    statistics: InventoryStatistics,
+    counts: AssessmentCounts,
+    items: [AssessmentItem]
+  ) {
+    self.status = status
+    self.statistics = statistics
+    self.counts = counts
+    self.items = items
+  }
+}
+
 public struct ScanWarning: Codable, Hashable, Sendable {
   public let provider: String
   public let message: String
@@ -189,15 +296,17 @@ public struct Inventory: Codable, Sendable {
   public var warnings: [ScanWarning]
   public var findings: [InventoryFinding]
   public var duplicateProducts: [SoftwareProduct]
+  public var assessment: InventoryAssessment
 
   public init(
-    schemaVersion: String = "1.1",
+    schemaVersion: String = "1.2",
     generatedAt: Date = Date(),
     host: String,
     packages: [PackageRecord],
     warnings: [ScanWarning] = [],
     findings: [InventoryFinding] = [],
-    duplicateProducts: [SoftwareProduct] = []
+    duplicateProducts: [SoftwareProduct] = [],
+    assessment: InventoryAssessment? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.generatedAt = generatedAt
@@ -206,6 +315,14 @@ public struct Inventory: Codable, Sendable {
     self.warnings = warnings
     self.findings = findings
     self.duplicateProducts = duplicateProducts
+    self.assessment =
+      assessment
+      ?? InventoryAnalyzer.assessment(
+        packages: packages,
+        warnings: warnings,
+        findings: findings,
+        duplicateProducts: duplicateProducts
+      )
   }
 }
 

@@ -4,7 +4,7 @@
 
 GhostApp 用来发现那些不会出现在“应用程序”目录里的工具：Homebrew Formula、全局 npm/Cargo/pipx/uv 工具、通过安装脚本写入用户目录的二进制，以及它们留下的配置、缓存、日志、会话和后台服务。
 
-> 当前版本：`0.2.0`。默认只生成清理计划；执行时，关联的用户文件会移动到废纸篓，并记录可撤销事务。
+> 当前版本：`0.2.1`。默认扫描输出面向人类，JSON 输出面向 AI/自动化；清理时关联文件会移动到废纸篓，并记录可撤销事务。
 
 ## 为什么做 GhostApp
 
@@ -44,6 +44,7 @@ curl ... | sh
 | 断链、失效 PATH、未归属/孤儿 launchd 项 | 已支持，只报告不自动清理 |
 | 冻结计划、过期检测与执行后验证 | 已支持 |
 | 事务历史与 Trash 文件恢复 | 已支持；不反向执行包管理器命令 |
+| 本地健康评估 | 已支持；不依赖 AI，输出 `HEALTHY`、`NEEDS REVIEW`、`WARNING` 或 `DANGER` |
 | JSON/AI 接口 | 已支持 |
 | 传统 `.app` 深度卸载 | 暂不支持 |
 | 恶意软件检测 | 不属于本项目范围 |
@@ -81,6 +82,25 @@ ghostapp version
 ```bash
 ghostapp scan
 ```
+
+默认输出只展示总体状态、统计和需要关注的项目。查看完整软件清单或系统信息项：
+
+```bash
+ghostapp scan --all
+ghostapp scan --show-info
+```
+
+分类由本地确定性规则完成，不需要联网或调用 AI：
+
+| 分类 | 含义 |
+|---|---|
+| `INFO` | macOS 动态路径等非操作性信息 |
+| `REVIEW` | 来源无法确认，但没有证据表明已经失效 |
+| `WARNING` | 断链、用户 PATH 残留或重复命令等确定问题 |
+| `ORPHANED` | 程序已经消失，但启动服务等对象仍存在 |
+| `DANGEROUS` | 明确触及安全边界的高风险结果 |
+
+`REVIEW` 不等于异常，也不会自动进入清理计划。
 
 `list` 是 `scan` 的别名：
 
@@ -168,6 +188,8 @@ ghostapp scan --compact
 ghostapp inspect grok-build --compact
 ghostapp plan grok-build --mode full --compact
 ```
+
+`scan --json` 与 `scan --compact` 包含和人类输出相同的 `assessment`、证据及置信度；AI 无需自行猜测正常或异常。
 
 也可以写入文件：
 

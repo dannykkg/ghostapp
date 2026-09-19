@@ -22,7 +22,7 @@ GhostApp 是一个 macOS CLI 软件资产扫描与深度卸载工具，重点覆
 ## 2. 用户接口
 
 ```text
-scan                  建立完整资产清单
+scan                  默认输出健康摘要；--all 展开完整资产清单
 list                  scan 的别名
 duplicates            查看重复命令和 PATH 生效版本
 inspect <query>       查看单个软件及关联证据
@@ -99,7 +99,7 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - 安全计划和可恢复执行；
 - 路径、置信度、命令信任、失败停止和 Provider fixture 单元测试与 GitHub Actions。
 
-### v0.2.0 — 深度扫描与可审计执行（本仓库当前状态）
+### v0.2.0 — 深度扫描与可审计执行
 
 - rustup shim 聚合，减少手工二进制误报；
 - Homebrew 直接安装/依赖分类；
@@ -108,6 +108,14 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - Google Antigravity CLI 数据规则；
 - 冻结计划、SHA-256、防 TOCTOU 文件身份校验和卸载后验证；
 - 事务历史与 Trash 文件恢复。
+
+### v0.2.1 — 人类与 AI 双输出（本仓库当前状态）
+
+- 默认终端输出改为总体状态、关键计数和可操作项目；
+- `--all` 展开软件清单，`--show-info` 展示非操作性系统信息；
+- `--json` 和 `--compact` 输出完整 `assessment`；
+- 本地确定性规则区分 `INFO`、`REVIEW`、`WARNING`、`ORPHANED` 与 `DANGEROUS`；
+- macOS 动态 PATH 不再作为用户残留警告。
 
 ### v0.3 — 覆盖更多安装体系
 
