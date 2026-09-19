@@ -685,6 +685,41 @@ struct GhostAppCoreTests {
     #expect(updates.last?.label == "Preparing report")
   }
 
+  @Test("HTML report is self-contained, expandable, escaped, and home-redacted")
+  func htmlReport() {
+    let home = "/Users/example"
+    let package = PackageRecord(
+      id: "manual:unsafe",
+      name: "unsafe",
+      displayName: "<script>alert('x')</script>",
+      version: "1.0",
+      manager: .manual,
+      binaries: [home + "/.local/bin/unsafe"],
+      artifacts: [
+        Artifact(
+          path: home + "/.config/unsafe",
+          kind: .configuration,
+          confidence: .high,
+          sizeBytes: 42,
+          evidence: [Evidence(source: "test", detail: "<b>evidence</b>")]
+        )
+      ]
+    )
+    let inventory = Inventory(host: "Mac & Mini", packages: [package])
+    let html = HTMLReportRenderer().render(inventory, homeDirectory: home)
+
+    #expect(html.contains("<!doctype html>"))
+    #expect(html.contains("<details class=\"package searchable\""))
+    #expect(html.contains("id=\"search\""))
+    #expect(html.contains("id=\"ghostapp-data\""))
+    #expect(html.contains("&lt;script&gt;alert"))
+    #expect(!html.contains("<script>alert('x')</script>"))
+    #expect(html.contains("~/.local/bin/unsafe"))
+    #expect(!html.lowercased().contains(home.lowercased()))
+    #expect(!html.contains("localStorage"))
+    #expect(!html.contains("fetch("))
+  }
+
   @Test("Confirmed stale paths and orphaned services raise warning status")
   func actionableAssessment() throws {
     let assessment = InventoryAnalyzer.assessment(

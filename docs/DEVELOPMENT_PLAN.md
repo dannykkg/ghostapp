@@ -25,6 +25,7 @@ GhostApp 是一个 macOS CLI 软件资产扫描与深度卸载工具，重点覆
 scan                  默认输出健康摘要；--all 展开完整资产清单
 list                  scan 的别名
 duplicates            查看重复命令和 PATH 生效版本
+report                导出单文件离线 HTML 报告
 inspect <query>       查看单个软件及关联证据
 plan <query>          生成卸载计划
 remove <query>        默认 dry-run；显式授权后执行
@@ -117,13 +118,21 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - 本地确定性规则区分 `INFO`、`REVIEW`、`WARNING`、`ORPHANED` 与 `DANGEROUS`；
 - macOS 动态 PATH 不再作为用户残留警告。
 
-### v0.2.2 — 扫描反馈与紧凑展示（本仓库当前状态）
+### v0.2.2 — 扫描反馈与紧凑展示
 
 - 交互式终端显示 10 个扫描阶段和总耗时；
 - JSON、重定向和非 TTY 环境不输出进度；
 - 默认评估只显示短名称与一句摘要，不泄露或铺开完整路径；
 - 相同信息项自动聚合，例如 `macOS dynamic PATH entry ×4`；
 - `--details` 显式展示完整路径与证据，`--all` 仅负责展开软件清单。
+
+### v0.2.3 — 离线 HTML 报告（本仓库当前状态）
+
+- `ghostapp report` 默认在当前目录生成带时间戳的 HTML 文件；
+- `--directory` 指定输出目录，`--output` 指定完整文件路径；
+- 报告支持搜索、展开/折叠、深浅色系统主题和移动端布局；
+- 完整 Inventory JSON 内嵌在单文件内，不依赖外部资源、存储或网络请求；
+- 主目录路径脱敏为 `~`，HTML 动态内容进行转义并由 CSP 限制外部资源。
 
 ### v0.3 — 覆盖更多安装体系
 

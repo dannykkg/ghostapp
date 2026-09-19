@@ -4,7 +4,7 @@ import GhostAppCore
 
 @main
 struct GhostAppCLI {
-  static let version = "0.2.2"
+  static let version = "0.2.3"
 
   static func main() {
     do {
@@ -50,6 +50,19 @@ struct GhostAppCLI {
       } else {
         printDuplicates(products)
       }
+    case "report":
+      let options = try ReportOptions(rest)
+      let inventory = scanInventory(showProgress: true)
+      let home = FileManager.default.homeDirectoryForCurrentUser.path
+      let html = HTMLReportRenderer().render(inventory, homeDirectory: home)
+      let output = try writeHTMLReport(
+        html,
+        requestedPath: options.output,
+        requestedDirectory: options.directory,
+        home: home
+      )
+      print("HTML report written to \(output)")
+      print("Open it with: open \(shellQuote([output]))")
     case "inspect":
       let parsed = try QueryOptions(rest)
       let inventory = scanInventory(showProgress: !parsed.common.json)
@@ -218,6 +231,38 @@ private struct ScanOptions {
     self.showInfo = showInfo
     self.showDetails = showDetails
     self.common = try CommonOptions(commonArguments)
+  }
+}
+
+private struct ReportOptions {
+  let output: String?
+  let directory: String?
+
+  init(_ arguments: [String]) throws {
+    var output: String?
+    var directory: String?
+    var index = 0
+    while index < arguments.count {
+      switch arguments[index] {
+      case "--output":
+        index += 1
+        guard index < arguments.count else { throw CLIError("--output requires a path", code: 2) }
+        output = arguments[index]
+      case "--directory":
+        index += 1
+        guard index < arguments.count else {
+          throw CLIError("--directory requires a path", code: 2)
+        }
+        directory = arguments[index]
+      default: throw CLIError("unexpected option '\(arguments[index])'", code: 2)
+      }
+      index += 1
+    }
+    if output != nil && directory != nil {
+      throw CLIError("--output and --directory cannot be used together", code: 2)
+    }
+    self.output = output
+    self.directory = directory
   }
 }
 
@@ -433,6 +478,55 @@ private func decodeJSONFile<T: Decodable>(_ path: String) throws -> T {
   }
 }
 
+private func writeHTMLReport(
+  _ html: String,
+  requestedPath: String?,
+  requestedDirectory: String?,
+  home: String
+) throws -> String {
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US_POSIX")
+  formatter.dateFormat = "yyyyMMdd-HHmmss"
+  let filename = "ghostapp-report-\(formatter.string(from: Date())).html"
+  let path: String
+  if let requestedPath {
+    let resolved = resolveOutputPath(requestedPath, home: home)
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    {
+      path = URL(fileURLWithPath: resolved).appendingPathComponent(filename).path
+    } else {
+      path = resolved
+    }
+  } else {
+    let directory =
+      requestedDirectory.map { resolveOutputPath($0, home: home) }
+      ?? FileManager.default.currentDirectoryPath
+    path = URL(fileURLWithPath: directory).appendingPathComponent(filename).path
+  }
+
+  do {
+    try FileManager.default.createDirectory(
+      atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path,
+      withIntermediateDirectories: true
+    )
+    try html.write(toFile: path, atomically: true, encoding: .utf8)
+    return path
+  } catch {
+    throw CLIError("cannot write HTML report to '\(path)': \(error.localizedDescription)", code: 5)
+  }
+}
+
+private func resolveOutputPath(_ value: String, home: String) -> String {
+  let expanded = PathSafety.expand(value, home: home)
+  if expanded.hasPrefix("/") {
+    return URL(fileURLWithPath: expanded).standardizedFileURL.path
+  }
+  return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    .appendingPathComponent(expanded).standardizedFileURL.path
+}
+
 private func printScanSummary(
   _ inventory: Inventory,
   showInfo: Bool,
@@ -632,6 +726,7 @@ private func printHelp() {
       ghostapp scan [--all] [--show-info] [--details] [--json|--compact] [--output FILE]
       ghostapp list [--all] [--show-info] [--details] [--json|--compact]
       ghostapp duplicates [--json|--compact]
+      ghostapp report [--output FILE | --directory DIR]
       ghostapp inspect <name-or-id> [--json|--compact]
       ghostapp plan <name-or-id> [--mode program|cache|full] [--include-sensitive] [--json]
       ghostapp remove <name-or-id> [--mode program|cache|full] [--include-sensitive]
@@ -652,7 +747,7 @@ private func printHelp() {
     AI / AUTOMATION
       Human output is the default. Add --compact for deterministic one-line JSON.
       Health classification is rule-based and does not require AI. Exit codes: 0 success,
-      2 usage, 3 not found, 4 ambiguous, 10 execution failure.
+      2 usage, 3 not found, 4 ambiguous, 5 output failure, 10 execution failure.
     """)
 }
 

@@ -2,6 +2,8 @@
 
 GhostApp 为 AI 和自动化提供非交互式、可组合的 JSON 接口。
 
+`ghostapp report` 面向人工审阅，导出可搜索和展开的单文件 HTML，并在 `ghostapp-data` 节点内嵌同一份 Inventory JSON。AI 自动化仍应直接使用 `--compact`，不需解析 HTML。
+
 ## 推荐调用序列
 
 ```bash

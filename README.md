@@ -4,7 +4,7 @@
 
 GhostApp 用来发现那些不会出现在“应用程序”目录里的工具：Homebrew Formula、全局 npm/Cargo/pipx/uv 工具、通过安装脚本写入用户目录的二进制，以及它们留下的配置、缓存、日志、会话和后台服务。
 
-> 当前版本：`0.2.2`。交互式扫描显示阶段进度，默认结果使用短摘要；JSON 输出面向 AI/自动化。
+> 当前版本：`0.2.3`。交互式扫描显示阶段进度，默认结果使用短摘要；完整结果可导出为离线 HTML 报告。
 
 ## 为什么做 GhostApp
 
@@ -45,6 +45,7 @@ curl ... | sh
 | 冻结计划、过期检测与执行后验证 | 已支持 |
 | 事务历史与 Trash 文件恢复 | 已支持；不反向执行包管理器命令 |
 | 本地健康评估 | 已支持；不依赖 AI，输出 `HEALTHY`、`NEEDS REVIEW`、`WARNING` 或 `DANGER` |
+| HTML 离线报告 | 已支持；单文件、可搜索和展开，内嵌完整扫描数据 |
 | JSON/AI 接口 | 已支持 |
 | 传统 `.app` 深度卸载 | 暂不支持 |
 | 恶意软件检测 | 不属于本项目范围 |
@@ -110,6 +111,16 @@ ghostapp scan --all
 ```bash
 ghostapp list
 ```
+
+导出一份适合人工审阅的 HTML 报告：
+
+```bash
+ghostapp report
+ghostapp report --directory ~/Desktop/reports
+ghostapp report --output ~/Desktop/ghostapp-report.html
+```
+
+默认会在当前目录生成带时间戳的 `ghostapp-report-*.html`。报告是带基本样式的单个静态文件，可搜索软件、展开完整路径和证据，并内嵌完整 Inventory JSON。它不读取凭据或会话正文，不调用网络、数据库、`fetch` 或 `localStorage`；当前用户主目录会显示为 `~`。
 
 单独查看同名命令的多份安装以及当前由 `PATH` 选中的版本：
 
@@ -216,6 +227,7 @@ scan / inspect → plan --output → 向用户展示计划 → 获得明确授�
 | `2` | 参数或用法错误 |
 | `3` | 没有找到匹配软件 |
 | `4` | 匹配不唯一 |
+| `5` | 输出文件失败 |
 | `10` | 执行阶段至少有一个动作失败 |
 
 ## 安全模型

@@ -2,5 +2,6 @@
 .swiftpm/
 .DS_Store
 inventory.json
+ghostapp-report-*.html
 *.xcodeproj
 xcuserdata/
