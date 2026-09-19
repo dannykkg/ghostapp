@@ -709,6 +709,13 @@ struct GhostAppCoreTests {
     let html = HTMLReportRenderer().render(inventory, homeDirectory: home)
 
     #expect(html.contains("<!doctype html>"))
+    #expect(html.contains("class=\"report-console\""))
+    #expect(html.contains("id=\"provider-distribution\""))
+    #expect(html.contains("id=\"findings\""))
+    #expect(html.contains("id=\"inventory\""))
+    #expect(html.contains("id=\"evidence\""))
+    #expect(html.contains("Scan pipeline"))
+    #expect(html.contains("color-scheme:light"))
     #expect(html.contains("<details class=\"package searchable\""))
     #expect(html.contains("id=\"search\""))
     #expect(html.contains("id=\"ghostapp-data\""))

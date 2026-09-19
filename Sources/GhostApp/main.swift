@@ -4,7 +4,7 @@ import GhostAppCore
 
 @main
 struct GhostAppCLI {
-  static let version = "0.2.3"
+  static let version = "0.2.4"
 
   static func main() {
     do {
