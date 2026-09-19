@@ -15,6 +15,16 @@
         {"path": "$HOME/.grok/logs", "kind": "log", "sensitive": false},
         {"path": "$HOME/.grok/cache", "kind": "cache", "sensitive": false}
       ]
+    },
+    {
+      "id": "antigravity-cli",
+      "displayName": "Google Antigravity CLI",
+      "managerNames": ["antigravity-cli", "agy"],
+      "executableNames": ["agy"],
+      "executablePaths": [],
+      "dataPaths": [
+        {"path": "$HOME/.gemini/antigravity-cli", "kind": "state", "sensitive": true}
+      ]
     }
   ]
 }

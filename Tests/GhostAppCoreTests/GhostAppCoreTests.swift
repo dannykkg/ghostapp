@@ -463,6 +463,197 @@ struct GhostAppCoreTests {
     #expect(package.binaries == [link])
   }
 
+  @Test("Frozen removal plans survive JSON round trips")
+  func planRoundTrip() throws {
+    let plan = removalPlan(actions: [
+      RemovalAction(
+        kind: .moveToTrash, description: "cache", path: "/tmp/home/.cache/demo")
+    ])
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    let data = try encoder.encode(plan)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try decoder.decode(RemovalPlan.self, from: data)
+
+    #expect(decoded.planHash == plan.planHash)
+    #expect(PlanIntegrity.isValid(decoded))
+  }
+
+  @Test("Tampered and stale plans are rejected before execution")
+  func planIntegrityAndPreconditions() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let cache = home + "/.cache/demo"
+    try write("first", to: cache)
+    let original = RemovalPlanner(context: ScanContext(homeDirectory: home)).plan(
+      package: PackageRecord(
+        id: "manual:demo",
+        name: "demo",
+        manager: .manual,
+        artifacts: [
+          Artifact(
+            path: cache, kind: .cache, confidence: .certain, removable: true, evidence: [])
+        ]
+      ),
+      mode: .cache
+    )
+    let tampered = RemovalPlan(
+      planID: original.planID,
+      generatedAt: original.generatedAt,
+      packageID: original.packageID,
+      packageName: original.packageName,
+      mode: original.mode,
+      includeSensitive: original.includeSensitive,
+      actions: [],
+      preconditions: original.preconditions,
+      estimatedBytes: original.estimatedBytes,
+      planHash: original.planHash
+    )
+    let context = ScanContext(homeDirectory: home, environment: [:], runner: StubRunner())
+    let tamperedReport = RemovalExecutor(context: context).execute(tampered, dryRun: false)
+    #expect(tamperedReport.failed.first?.error.contains("hash") == true)
+
+    try write("replacement", to: cache)
+    let staleReport = RemovalExecutor(context: context).execute(original, dryRun: false)
+    #expect(staleReport.failed.first?.error.contains("stale") == true)
+    #expect(FileManager.default.fileExists(atPath: cache))
+  }
+
+  @Test("Post-uninstall verification prevents dependent cleanup")
+  func verificationStopsCleanup() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let binary = home + "/.local/bin/demo"
+    let cache = home + "/.cache/demo"
+    try makeExecutable(at: binary)
+    try write("keep", to: cache)
+    let command = ["/bin/launchctl", "help"]
+    let plan = removalPlan(actions: [
+      RemovalAction(kind: .runCommand, description: "uninstall", command: command),
+      RemovalAction(
+        kind: .verifyPathAbsent, description: "verify executable", path: binary),
+      RemovalAction(kind: .moveToTrash, description: "cache", path: cache),
+    ])
+    let context = ScanContext(
+      homeDirectory: home,
+      environment: [:],
+      runner: StubRunner(outputs: [
+        command.joined(separator: " "): CommandOutput(status: 0, stdout: "", stderr: "")
+      ])
+    )
+
+    let report = RemovalExecutor(context: context).execute(plan, dryRun: false)
+    #expect(report.failed.first?.error.contains("still exists") == true)
+    #expect(report.skipped.contains { $0.path == cache })
+    #expect(FileManager.default.fileExists(atPath: cache))
+  }
+
+  @Test("Trash transactions can be inspected and restored")
+  func transactionUndo() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let cache = home + "/.cache/demo"
+    try write("restore me", to: cache)
+    let context = ScanContext(homeDirectory: home, environment: [:], runner: StubRunner())
+    let report = RemovalExecutor(context: context).execute(
+      removalPlan(actions: [
+        RemovalAction(kind: .moveToTrash, description: "cache", path: cache)
+      ]),
+      dryRun: false
+    )
+    let transactionID = try #require(report.transactionID)
+    let store = TransactionStore(context: context)
+    #expect(store.history().transactions.map(\.transactionID).contains(transactionID))
+    #expect(store.undo(transactionID, dryRun: true).restored.isEmpty)
+
+    let undo = store.undo(transactionID, dryRun: false)
+    #expect(undo.failed.isEmpty)
+    #expect(undo.restored.count == 1)
+    #expect(FileManager.default.fileExists(atPath: cache))
+  }
+
+  @Test("Rustup shims are grouped as one managed toolchain")
+  func rustupOwnership() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let bin = home + "/.cargo/bin"
+    let rustup = bin + "/rustup"
+    let rustc = bin + "/rustc"
+    let cargo = bin + "/cargo"
+    try makeExecutable(at: rustup)
+    try FileManager.default.createSymbolicLink(atPath: rustc, withDestinationPath: rustup)
+    try FileManager.default.linkItem(atPath: rustup, toPath: cargo)
+    let context = ScanContext(
+      homeDirectory: home,
+      environment: ["PATH": bin],
+      runner: StubRunner(outputs: [
+        "\(rustup) --version": CommandOutput(
+          status: 0, stdout: "rustup 1.28.2 (test)\n", stderr: "")
+      ])
+    )
+
+    let inventory = InventoryScanner(context: context, rules: RuleRegistry(rules: [])).scan()
+    let package = try #require(inventory.packages.first { $0.id == "rustup:toolchain" })
+    #expect(package.version == "1.28.2")
+    #expect(package.binaries == [cargo, rustc, rustup])
+    #expect(!inventory.packages.contains { $0.id.hasPrefix("manual:rustc:") })
+  }
+
+  @Test("Duplicate commands identify the active PATH installation")
+  func duplicateCommands() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let first = home + "/first/demo"
+    let second = home + "/second/demo"
+    try makeExecutable(at: first)
+    try makeExecutable(at: second)
+    let context = ScanContext(
+      homeDirectory: home,
+      environment: ["PATH": home + "/first:" + home + "/second"]
+    )
+    let products = InventoryAnalyzer.duplicateProducts(
+      packages: [
+        PackageRecord(
+          id: "manual:first", name: "first", manager: .manual, binaries: [first]),
+        PackageRecord(
+          id: "manual:second", name: "second", manager: .manual, binaries: [second]),
+      ],
+      context: context
+    )
+    let product = try #require(products.first)
+    #expect(product.activeBinary == first)
+    #expect(product.installations.first { $0.binary == first }?.activeInPath == true)
+    #expect(product.installations.first { $0.binary == second }?.activeInPath == false)
+  }
+
+  @Test("Scanner reports broken links, stale PATH entries, and Antigravity state")
+  func deepFindingsAndAntigravity() throws {
+    let home = try temporaryHome()
+    defer { try? FileManager.default.removeItem(atPath: home) }
+    let bin = home + "/.local/bin"
+    let agy = bin + "/agy"
+    let broken = bin + "/gone"
+    let stale = home + "/missing-bin"
+    try makeExecutable(at: agy)
+    try FileManager.default.createSymbolicLink(
+      atPath: broken, withDestinationPath: home + "/missing-target")
+    try write("session", to: home + "/.gemini/antigravity-cli/state.json")
+    let context = ScanContext(
+      homeDirectory: home,
+      environment: ["PATH": bin + ":" + stale],
+      runner: StubRunner()
+    )
+
+    let inventory = InventoryScanner(context: context).scan()
+    let package = try #require(
+      inventory.packages.first { $0.id == "manual:antigravity-cli" })
+    #expect(package.artifacts.contains { $0.path == home + "/.gemini/antigravity-cli" })
+    #expect(package.artifacts.contains { $0.path.contains("antigravity-cli") && $0.sensitive })
+    #expect(inventory.findings.contains { $0.kind == .brokenSymlink && $0.path == broken })
+    #expect(inventory.findings.contains { $0.kind == .stalePathEntry && $0.path == stale })
+  }
+
   private func temporaryHome() throws -> String {
     let path = FileManager.default.temporaryDirectory
       .appendingPathComponent("ghostapp-tests-\(UUID().uuidString)").path

@@ -7,6 +7,7 @@ public enum PackageManager: String, Codable, CaseIterable, Sendable {
   case npm
   case pipx
   case uv
+  case rustup
   case manual
 }
 
@@ -78,6 +79,7 @@ public struct PackageRecord: Codable, Hashable, Sendable {
   public var binaries: [String]
   public var artifacts: [Artifact]
   public var uninstallCommand: [String]?
+  public var directInstall: Bool?
 
   public init(
     id: String,
@@ -87,7 +89,8 @@ public struct PackageRecord: Codable, Hashable, Sendable {
     manager: PackageManager,
     binaries: [String] = [],
     artifacts: [Artifact] = [],
-    uninstallCommand: [String]? = nil
+    uninstallCommand: [String]? = nil,
+    directInstall: Bool? = nil
   ) {
     self.id = id
     self.name = name
@@ -97,6 +100,74 @@ public struct PackageRecord: Codable, Hashable, Sendable {
     self.binaries = binaries
     self.artifacts = artifacts
     self.uninstallCommand = uninstallCommand
+    self.directInstall = directInstall
+  }
+}
+
+public enum InventoryFindingKind: String, Codable, CaseIterable, Sendable {
+  case brokenSymlink = "broken-symlink"
+  case orphanLaunchService = "orphan-launch-service"
+  case unclaimedLaunchService = "unclaimed-launch-service"
+  case stalePathEntry = "stale-path-entry"
+}
+
+public struct InventoryFinding: Codable, Hashable, Sendable {
+  public let kind: InventoryFindingKind
+  public let path: String
+  public let confidence: Confidence
+  public let detail: String
+  public let removable: Bool
+
+  public init(
+    kind: InventoryFindingKind,
+    path: String,
+    confidence: Confidence,
+    detail: String,
+    removable: Bool = false
+  ) {
+    self.kind = kind
+    self.path = path
+    self.confidence = confidence
+    self.detail = detail
+    self.removable = removable
+  }
+}
+
+public struct InstallationInstance: Codable, Hashable, Sendable {
+  public let packageID: String
+  public let manager: PackageManager
+  public let version: String?
+  public let binary: String
+  public let activeInPath: Bool
+
+  public init(
+    packageID: String,
+    manager: PackageManager,
+    version: String?,
+    binary: String,
+    activeInPath: Bool
+  ) {
+    self.packageID = packageID
+    self.manager = manager
+    self.version = version
+    self.binary = binary
+    self.activeInPath = activeInPath
+  }
+}
+
+public struct SoftwareProduct: Codable, Hashable, Sendable {
+  public let identity: String
+  public let activeBinary: String?
+  public let installations: [InstallationInstance]
+
+  public init(
+    identity: String,
+    activeBinary: String?,
+    installations: [InstallationInstance]
+  ) {
+    self.identity = identity
+    self.activeBinary = activeBinary
+    self.installations = installations
   }
 }
 
@@ -116,19 +187,25 @@ public struct Inventory: Codable, Sendable {
   public let host: String
   public var packages: [PackageRecord]
   public var warnings: [ScanWarning]
+  public var findings: [InventoryFinding]
+  public var duplicateProducts: [SoftwareProduct]
 
   public init(
-    schemaVersion: String = "1.0",
+    schemaVersion: String = "1.1",
     generatedAt: Date = Date(),
     host: String,
     packages: [PackageRecord],
-    warnings: [ScanWarning] = []
+    warnings: [ScanWarning] = [],
+    findings: [InventoryFinding] = [],
+    duplicateProducts: [SoftwareProduct] = []
   ) {
     self.schemaVersion = schemaVersion
     self.generatedAt = generatedAt
     self.host = host
     self.packages = packages
     self.warnings = warnings
+    self.findings = findings
+    self.duplicateProducts = duplicateProducts
   }
 }
 
@@ -141,6 +218,7 @@ public enum RemovalMode: String, Codable, Sendable {
 public enum RemovalActionKind: String, Codable, Sendable {
   case runCommand = "run-command"
   case moveToTrash = "move-to-trash"
+  case verifyPathAbsent = "verify-path-absent"
   case manualReview = "manual-review"
 }
 
@@ -166,31 +244,72 @@ public struct RemovalAction: Codable, Hashable, Sendable {
   }
 }
 
+public struct PlanPrecondition: Codable, Hashable, Sendable {
+  public let path: String
+  public let device: UInt64
+  public let inode: UInt64
+  public let symbolicLink: Bool
+
+  public init(path: String, device: UInt64, inode: UInt64, symbolicLink: Bool) {
+    self.path = path
+    self.device = device
+    self.inode = inode
+    self.symbolicLink = symbolicLink
+  }
+}
+
 public struct RemovalPlan: Codable, Sendable {
   public let schemaVersion: String
+  public let planID: String
+  public let planHash: String
+  public let generatedAt: Date
   public let packageID: String
   public let packageName: String
   public let mode: RemovalMode
   public let includeSensitive: Bool
   public let actions: [RemovalAction]
+  public let preconditions: [PlanPrecondition]
   public let estimatedBytes: Int64
 
   public init(
-    schemaVersion: String = "1.0",
+    schemaVersion: String = "1.1",
+    planID: String = UUID().uuidString.lowercased(),
+    generatedAt: Date = Date(),
     packageID: String,
     packageName: String,
     mode: RemovalMode,
     includeSensitive: Bool,
     actions: [RemovalAction],
-    estimatedBytes: Int64
+    preconditions: [PlanPrecondition] = [],
+    estimatedBytes: Int64,
+    planHash: String? = nil
   ) {
+    let normalizedGeneratedAt = Date(
+      timeIntervalSince1970: floor(generatedAt.timeIntervalSince1970))
     self.schemaVersion = schemaVersion
+    self.planID = planID
+    self.generatedAt = normalizedGeneratedAt
     self.packageID = packageID
     self.packageName = packageName
     self.mode = mode
     self.includeSensitive = includeSensitive
     self.actions = actions
+    self.preconditions = preconditions
     self.estimatedBytes = estimatedBytes
+    self.planHash =
+      planHash
+      ?? PlanIntegrity.hash(
+        schemaVersion: schemaVersion,
+        planID: planID,
+        generatedAt: normalizedGeneratedAt,
+        packageID: packageID,
+        packageName: packageName,
+        mode: mode,
+        includeSensitive: includeSensitive,
+        actions: actions,
+        preconditions: preconditions,
+        estimatedBytes: estimatedBytes
+      )
   }
 }
 
@@ -202,15 +321,19 @@ public struct ExecutionReport: Codable, Sendable {
   public let planned: [RemovalAction]
   public let completed: [RemovalAction]
   public let failed: [ActionFailure]
+  public let skipped: [RemovalAction]
+  public let transactionID: String?
 
   public init(
-    schemaVersion: String = "1.0",
+    schemaVersion: String = "1.1",
     packageID: String,
     executedAt: Date = Date(),
     dryRun: Bool,
     planned: [RemovalAction],
     completed: [RemovalAction],
-    failed: [ActionFailure]
+    failed: [ActionFailure],
+    skipped: [RemovalAction] = [],
+    transactionID: String? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.packageID = packageID
@@ -219,6 +342,96 @@ public struct ExecutionReport: Codable, Sendable {
     self.planned = planned
     self.completed = completed
     self.failed = failed
+    self.skipped = skipped
+    self.transactionID = transactionID
+  }
+}
+
+public struct TransactionMove: Codable, Hashable, Sendable {
+  public let originalPath: String
+  public let trashPath: String
+
+  public init(originalPath: String, trashPath: String) {
+    self.originalPath = originalPath
+    self.trashPath = trashPath
+  }
+}
+
+public struct TransactionManifest: Codable, Sendable {
+  public let schemaVersion: String
+  public let transactionID: String
+  public let packageID: String
+  public let planID: String
+  public let planHash: String
+  public let startedAt: Date
+  public let finishedAt: Date
+  public let moves: [TransactionMove]
+  public let completedCommands: [[String]]
+  public let failures: [String]
+  public let undoneAt: Date?
+
+  public init(
+    schemaVersion: String = "1.0",
+    transactionID: String,
+    packageID: String,
+    planID: String,
+    planHash: String,
+    startedAt: Date,
+    finishedAt: Date,
+    moves: [TransactionMove],
+    completedCommands: [[String]],
+    failures: [String],
+    undoneAt: Date? = nil
+  ) {
+    self.schemaVersion = schemaVersion
+    self.transactionID = transactionID
+    self.packageID = packageID
+    self.planID = planID
+    self.planHash = planHash
+    self.startedAt = startedAt
+    self.finishedAt = finishedAt
+    self.moves = moves
+    self.completedCommands = completedCommands
+    self.failures = failures
+    self.undoneAt = undoneAt
+  }
+}
+
+public struct TransactionHistory: Codable, Sendable {
+  public let schemaVersion: String
+  public let transactions: [TransactionManifest]
+
+  public init(schemaVersion: String = "1.0", transactions: [TransactionManifest]) {
+    self.schemaVersion = schemaVersion
+    self.transactions = transactions
+  }
+}
+
+public struct UndoReport: Codable, Sendable {
+  public let schemaVersion: String
+  public let transactionID: String
+  public let dryRun: Bool
+  public let planned: [TransactionMove]
+  public let restored: [TransactionMove]
+  public let failed: [String]
+  public let note: String
+
+  public init(
+    schemaVersion: String = "1.0",
+    transactionID: String,
+    dryRun: Bool,
+    planned: [TransactionMove],
+    restored: [TransactionMove],
+    failed: [String],
+    note: String
+  ) {
+    self.schemaVersion = schemaVersion
+    self.transactionID = transactionID
+    self.dryRun = dryRun
+    self.planned = planned
+    self.restored = restored
+    self.failed = failed
+    self.note = note
   }
 }
 

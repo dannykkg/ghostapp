@@ -2,7 +2,11 @@ import Darwin
 import Foundation
 
 public struct RemovalPlanner {
-  public init() {}
+  private let context: ScanContext
+
+  public init(context: ScanContext = ScanContext()) {
+    self.context = context
+  }
 
   public func plan(
     package: PackageRecord,
@@ -18,6 +22,14 @@ public struct RemovalPlanner {
           description: "Uninstall \(package.displayName) with \(package.manager.rawValue)",
           command: command
         ))
+      for binary in package.binaries {
+        actions.append(
+          RemovalAction(
+            kind: .verifyPathAbsent,
+            description: "Verify package executable is gone",
+            path: binary
+          ))
+      }
     } else {
       for artifact in package.artifacts where artifact.kind == .executable && artifact.removable {
         guard isAutomaticallyRemovable(artifact) else {
@@ -72,12 +84,26 @@ public struct RemovalPlanner {
       return seen.insert(key).inserted
     }
 
+    let preconditionPaths = actions.compactMap { action -> String? in
+      switch action.kind {
+      case .runCommand: action.command?.first
+      case .moveToTrash, .verifyPathAbsent: action.path
+      case .manualReview: nil
+      }
+    }
+    var seenPreconditions = Set<String>()
+    let preconditions = preconditionPaths.compactMap { path -> PlanPrecondition? in
+      guard seenPreconditions.insert(path).inserted else { return nil }
+      return FileIdentity.capture(path)
+    }
+
     return RemovalPlan(
       packageID: package.id,
       packageName: package.displayName,
       mode: mode,
       includeSensitive: includeSensitive,
       actions: actions,
+      preconditions: preconditions,
       estimatedBytes: estimatedBytes
     )
   }
@@ -116,6 +142,32 @@ public final class RemovalExecutor {
   }
 
   public func execute(_ plan: RemovalPlan, dryRun: Bool) -> ExecutionReport {
+    if !PlanIntegrity.isValid(plan) {
+      let failure = planFailure("Plan hash does not match its contents")
+      return ExecutionReport(
+        packageID: plan.packageID,
+        dryRun: dryRun,
+        planned: plan.actions,
+        completed: [],
+        failed: [failure],
+        skipped: plan.actions
+      )
+    }
+
+    let stale = plan.preconditions.filter { !FileIdentity.matches($0) }
+    if !stale.isEmpty {
+      let paths = stale.map(\.path).joined(separator: ", ")
+      let failure = planFailure("Plan is stale; filesystem identity changed: \(paths)")
+      return ExecutionReport(
+        packageID: plan.packageID,
+        dryRun: dryRun,
+        planned: plan.actions,
+        completed: [],
+        failed: [failure],
+        skipped: plan.actions
+      )
+    }
+
     if dryRun {
       return ExecutionReport(
         packageID: plan.packageID,
@@ -128,9 +180,14 @@ public final class RemovalExecutor {
 
     var completed: [RemovalAction] = []
     var failed: [ActionFailure] = []
-    let trashRoot = makeTrashRoot(packageID: plan.packageID)
+    var skipped: [RemovalAction] = []
+    var moves: [TransactionMove] = []
+    var completedCommands: [[String]] = []
+    let startedAt = Date()
+    let transactionID = UUID().uuidString.lowercased()
+    let trashRoot = makeTrashRoot(packageID: plan.packageID, transactionID: transactionID)
 
-    for action in plan.actions {
+    for (index, action) in plan.actions.enumerated() {
       do {
         switch action.kind {
         case .runCommand:
@@ -143,19 +200,49 @@ public final class RemovalExecutor {
             throw RemovalError.commandFailed(
               output.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
           }
+          completedCommands.append(command)
         case .moveToTrash:
           guard let path = action.path else {
             throw RemovalError.invalidAction("Missing path")
           }
-          try moveToTrash(path, root: trashRoot)
+          moves.append(try moveToTrash(path, root: trashRoot))
+        case .verifyPathAbsent:
+          guard let path = action.path else {
+            throw RemovalError.invalidAction("Missing verification path")
+          }
+          if PathSafety.objectExists(at: path) {
+            throw RemovalError.verificationFailed(path)
+          }
         case .manualReview:
+          skipped.append(action)
           continue
         }
         completed.append(action)
       } catch {
         failed.append(ActionFailure(action: action, error: error.localizedDescription))
-        if action.kind == .runCommand { break }
+        if action.kind == .runCommand || action.kind == .verifyPathAbsent {
+          skipped.append(contentsOf: plan.actions.dropFirst(index + 1))
+          break
+        }
       }
+    }
+
+    let manifest = TransactionManifest(
+      transactionID: transactionID,
+      packageID: plan.packageID,
+      planID: plan.planID,
+      planHash: plan.planHash,
+      startedAt: startedAt,
+      finishedAt: Date(),
+      moves: moves,
+      completedCommands: completedCommands,
+      failures: failed.map(\.error)
+    )
+    do {
+      try TransactionStore(context: context).save(manifest)
+    } catch {
+      failed.append(
+        planFailure("Could not save transaction manifest: \(error.localizedDescription)"))
     }
 
     return ExecutionReport(
@@ -163,7 +250,9 @@ public final class RemovalExecutor {
       dryRun: false,
       planned: plan.actions,
       completed: completed,
-      failed: failed
+      failed: failed,
+      skipped: skipped,
+      transactionID: transactionID
     )
   }
 
@@ -180,15 +269,15 @@ public final class RemovalExecutor {
     }
   }
 
-  private func makeTrashRoot(packageID: String) -> String {
+  private func makeTrashRoot(packageID: String, transactionID: String) -> String {
     let safeID = packageID.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "-" }
     let formatter = DateFormatter()
     formatter.dateFormat = "yyyyMMdd-HHmmss"
     return context.homeDirectory
-      + "/.Trash/ghostapp-\(String(safeID))-\(formatter.string(from: Date()))"
+      + "/.Trash/ghostapp-\(String(safeID))-\(formatter.string(from: Date()))-\(transactionID)"
   }
 
-  private func moveToTrash(_ path: String, root: String) throws {
+  private func moveToTrash(_ path: String, root: String) throws -> TransactionMove {
     guard PathSafety.objectExists(at: path) else { throw RemovalError.pathNotFound(path) }
     guard PathSafety.isSafeUserRemovalPath(path, home: context.homeDirectory) else {
       throw RemovalError.unsafePath(path)
@@ -205,6 +294,14 @@ public final class RemovalExecutor {
       suffix += 1
     }
     try context.fileManager.moveItem(atPath: path, toPath: destination)
+    return TransactionMove(originalPath: path, trashPath: destination)
+  }
+
+  private func planFailure(_ message: String) -> ActionFailure {
+    ActionFailure(
+      action: RemovalAction(kind: .manualReview, description: "Plan validation"),
+      error: message
+    )
   }
 }
 
@@ -214,6 +311,7 @@ public enum RemovalError: LocalizedError {
   case pathNotFound(String)
   case invalidAction(String)
   case commandFailed(String)
+  case verificationFailed(String)
 
   public var errorDescription: String? {
     switch self {
@@ -223,6 +321,8 @@ public enum RemovalError: LocalizedError {
     case .invalidAction(let message): "Invalid removal action: \(message)"
     case .commandFailed(let message):
       "Command failed: \(message.isEmpty ? "unknown error" : message)"
+    case .verificationFailed(let path):
+      "Post-uninstall verification failed; path still exists: \(path)"
     }
   }
 }

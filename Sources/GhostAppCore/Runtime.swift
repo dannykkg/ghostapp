@@ -156,7 +156,7 @@ public struct ScanContext: @unchecked Sendable {
 
 public enum TrustedExecutable {
   private static let supportedNames = Set([
-    "brew", "cargo", "npm", "pipx", "uv", "launchctl", "plutil",
+    "brew", "cargo", "npm", "pipx", "uv", "rustup", "launchctl", "plutil",
   ])
 
   public static func isAllowed(
@@ -231,7 +231,7 @@ public enum TrustedExecutable {
   ) -> [String] {
     var directories: [String] = []
     switch name {
-    case "cargo":
+    case "cargo", "rustup":
       directories.append((environment["CARGO_HOME"] ?? home + "/.cargo") + "/bin")
     case "pipx":
       directories.append(home + "/.local/bin")

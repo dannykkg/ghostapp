@@ -18,7 +18,7 @@ public final class InventoryScanner {
     var packages: [PackageRecord] = []
     var warnings: [ScanWarning] = []
 
-    for result in [scanHomebrew(), scanCargo(), scanNPM(), scanPipx(), scanUV()] {
+    for result in [scanHomebrew(), scanRustup(), scanCargo(), scanNPM(), scanPipx(), scanUV()] {
       packages.append(contentsOf: result.packages)
       warnings.append(contentsOf: result.warnings)
     }
@@ -32,6 +32,9 @@ public final class InventoryScanner {
     packages = associateLaunchServices(packages)
     packages = packages.map(associateShellConfiguration)
     packages = deduplicate(packages)
+    let findings = scanFindings(packages: packages)
+    let duplicateProducts = InventoryAnalyzer.duplicateProducts(
+      packages: packages, context: context)
 
     let host = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     return Inventory(
@@ -41,7 +44,9 @@ public final class InventoryScanner {
           $1.displayName.lowercased(), $1.manager.rawValue
         )
       },
-      warnings: warnings
+      warnings: warnings,
+      findings: findings,
+      duplicateProducts: duplicateProducts
     )
   }
 
@@ -60,18 +65,29 @@ public final class InventoryScanner {
       ])
     }
     let prefix = prefixOutput.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    let requestedOutput = context.runner.run(brew, ["leaves", "--installed-on-request"])
+    let fallbackLeaves =
+      requestedOutput.status == 0 ? requestedOutput : context.runner.run(brew, ["leaves"])
+    let requestedFormulae = Set(
+      fallbackLeaves.status == 0
+        ? fallbackLeaves.stdout.split(whereSeparator: \.isNewline).map {
+          $0.split(separator: " ").first.map(String.init) ?? ""
+        }
+        : [])
     var result = ProviderResult()
     result.packages += parseBrewList(
       context.runner.run(brew, ["list", "--formula", "--versions"]),
       manager: .homebrewFormula,
       brew: brew,
-      prefix: prefix
+      prefix: prefix,
+      requestedFormulae: requestedFormulae
     )
     result.packages += parseBrewList(
       context.runner.run(brew, ["list", "--cask", "--versions"]),
       manager: .homebrewCask,
       brew: brew,
-      prefix: prefix
+      prefix: prefix,
+      requestedFormulae: requestedFormulae
     )
     return result
   }
@@ -80,7 +96,8 @@ public final class InventoryScanner {
     _ output: CommandOutput,
     manager: PackageManager,
     brew: String,
-    prefix: String
+    prefix: String,
+    requestedFormulae: Set<String>
   ) -> [PackageRecord] {
     guard output.status == 0 else { return [] }
     return output.stdout.split(whereSeparator: \.isNewline).compactMap { line in
@@ -122,9 +139,66 @@ public final class InventoryScanner {
         binaries: binaries,
         artifacts: artifacts,
         uninstallCommand: [brew, "uninstall"]
-          + (manager == .homebrewCask ? ["--cask"] : ["--formula"]) + [name]
+          + (manager == .homebrewCask ? ["--cask"] : ["--formula"]) + [name],
+        directInstall: manager == .homebrewCask || requestedFormulae.contains(name)
       )
     }
+  }
+
+  private func scanRustup() -> ProviderResult {
+    let binDirectory =
+      (context.environment["CARGO_HOME"] ?? context.homeDirectory + "/.cargo") + "/bin"
+    guard
+      let rustup = context.resolveTrustedExecutable(
+        "rustup", fallbacks: [binDirectory]),
+      let rustupIdentity = FileIdentity.capture(rustup)
+    else { return ProviderResult() }
+
+    let entries = (try? context.fileManager.contentsOfDirectory(atPath: binDirectory)) ?? []
+    let proxies = entries.compactMap { entry -> String? in
+      let path = binDirectory + "/" + entry
+      guard context.fileManager.isExecutableFile(atPath: path) else { return nil }
+      let identity = FileIdentity.capture(path)
+      let sameObject =
+        identity?.device == rustupIdentity.device
+        && identity?.inode == rustupIdentity.inode
+      let sameResolvedTarget = PathSafety.canonical(path) == PathSafety.canonical(rustup)
+      guard sameObject || sameResolvedTarget else { return nil }
+      return path
+    }
+    .sorted()
+    guard !proxies.isEmpty else { return ProviderResult() }
+
+    let versionOutput = context.runner.run(rustup, ["--version"])
+    let version = versionOutput.stdout.split(whereSeparator: \.isWhitespace).dropFirst().first.map(
+      String.init)
+    let rustupRoot = context.environment["RUSTUP_HOME"] ?? context.homeDirectory + "/.rustup"
+    let cargoRoot = context.environment["CARGO_HOME"] ?? context.homeDirectory + "/.cargo"
+    var artifacts = proxies.map { binaryArtifact($0, source: "rustup") }
+    for path in [rustupRoot, cargoRoot] where context.fileManager.fileExists(atPath: path) {
+      artifacts.append(
+        Artifact(
+          path: path,
+          kind: .installation,
+          confidence: .certain,
+          sizeBytes: FileSizer.allocatedSize(at: path, fileManager: context.fileManager),
+          removable: false,
+          evidence: [Evidence(source: "rustup", detail: "Rust toolchain-managed root")]
+        ))
+    }
+    return ProviderResult(packages: [
+      PackageRecord(
+        id: "rustup:toolchain",
+        name: "rustup",
+        displayName: "Rustup toolchain",
+        version: version,
+        manager: .rustup,
+        binaries: proxies,
+        artifacts: artifacts,
+        uninstallCommand: [rustup, "self", "uninstall", "-y"],
+        directInstall: true
+      )
+    ])
   }
 
   func binariesOwned(by packageRoot: String, in prefix: String) -> [String] {
@@ -171,7 +245,8 @@ public final class InventoryScanner {
         id: "cargo:\(name)", name: name, version: currentVersion, manager: .cargo,
         binaries: paths,
         artifacts: paths.map { binaryArtifact($0, source: "cargo") },
-        uninstallCommand: [cargo, "uninstall", name]
+        uninstallCommand: [cargo, "uninstall", name],
+        directInstall: true
       )
     }
 
@@ -229,7 +304,8 @@ public final class InventoryScanner {
         id: "npm:\(name)", name: name, version: version, manager: .npm,
         binaries: binaries,
         artifacts: binaries.map { binaryArtifact($0, source: "npm") },
-        uninstallCommand: [npm, "uninstall", "--global", name]
+        uninstallCommand: [npm, "uninstall", "--global", name],
+        directInstall: true
       )
     }
     return ProviderResult(packages: records)
@@ -280,7 +356,8 @@ public final class InventoryScanner {
         manager: .pipx,
         binaries: binaries,
         artifacts: binaries.map { binaryArtifact($0, source: "pipx") },
-        uninstallCommand: [pipx, "uninstall", name]
+        uninstallCommand: [pipx, "uninstall", name],
+        directInstall: true
       )
     }
     return ProviderResult(packages: records)
@@ -313,7 +390,8 @@ public final class InventoryScanner {
         id: "uv:\(name)", name: name, version: currentVersion, manager: .uv,
         binaries: binaries,
         artifacts: binaries.map { binaryArtifact($0, source: "uv") },
-        uninstallCommand: [uv, "tool", "uninstall", name]
+        uninstallCommand: [uv, "tool", "uninstall", name],
+        directInstall: true
       )
     }
 
@@ -513,6 +591,82 @@ public final class InventoryScanner {
       .sorted { ($0.kind.rawValue, $0.path) < ($1.kind.rawValue, $1.path) }
       return package
     }
+  }
+
+  private func scanFindings(packages: [PackageRecord]) -> [InventoryFinding] {
+    var findings: [InventoryFinding] = []
+    let manualRoots = [
+      context.homeDirectory + "/.local/bin",
+      context.homeDirectory + "/bin",
+      context.homeDirectory + "/.grok/bin",
+      context.homeDirectory + "/.cargo/bin",
+      context.homeDirectory + "/go/bin",
+    ]
+    for root in manualRoots {
+      let entries = (try? context.fileManager.contentsOfDirectory(atPath: root)) ?? []
+      for entry in entries {
+        let path = root + "/" + entry
+        guard let identity = FileIdentity.capture(path), identity.symbolicLink,
+          !context.fileManager.fileExists(atPath: path)
+        else { continue }
+        findings.append(
+          InventoryFinding(
+            kind: .brokenSymlink,
+            path: path,
+            confidence: .certain,
+            detail: "Symbolic link target does not exist.",
+            removable: PathSafety.isSafeUserRemovalPath(path, home: context.homeDirectory)
+          ))
+      }
+    }
+
+    var seenPathEntries = Set<String>()
+    for rawEntry in (context.environment["PATH"] ?? "").split(separator: ":").map(String.init) {
+      let path = PathSafety.expand(rawEntry, home: context.homeDirectory)
+      guard path.hasPrefix("/"), seenPathEntries.insert(path).inserted,
+        !context.fileManager.fileExists(atPath: path)
+      else { continue }
+      findings.append(
+        InventoryFinding(
+          kind: .stalePathEntry,
+          path: path,
+          confidence: .certain,
+          detail: "PATH references a directory that does not exist."
+        ))
+    }
+
+    let claimedServices = Set(
+      packages.flatMap(\.artifacts).filter { $0.kind == .service }.map { $0.path })
+    let launchDirectories = [
+      context.homeDirectory + "/Library/LaunchAgents",
+      "/Library/LaunchAgents",
+      "/Library/LaunchDaemons",
+    ]
+    for directory in launchDirectories {
+      let files = (try? context.fileManager.contentsOfDirectory(atPath: directory)) ?? []
+      for file in files where file.hasSuffix(".plist") {
+        let path = directory + "/" + file
+        guard !claimedServices.contains(path), let metadata = plistMetadata(at: path) else {
+          continue
+        }
+        let programMissing =
+          metadata.program.hasPrefix("/")
+          && !context.fileManager.fileExists(atPath: metadata.program)
+        findings.append(
+          InventoryFinding(
+            kind: programMissing ? .orphanLaunchService : .unclaimedLaunchService,
+            path: path,
+            confidence: programMissing ? .high : .low,
+            detail: programMissing
+              ? "Launch service \(metadata.label) points to missing program \(metadata.program)."
+              : "Launch service \(metadata.label) is not linked to a discovered package (program: \(metadata.program))."
+          ))
+      }
+    }
+
+    var seen = Set<String>()
+    return findings.filter { seen.insert("\($0.kind.rawValue):\($0.path)").inserted }
+      .sorted { ($0.kind.rawValue, $0.path) < ($1.kind.rawValue, $1.path) }
   }
 
   private func binaryArtifact(_ path: String, source: String, removable: Bool = false) -> Artifact {

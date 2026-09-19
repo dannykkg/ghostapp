@@ -24,9 +24,13 @@ GhostApp 是一个 macOS CLI 软件资产扫描与深度卸载工具，重点覆
 ```text
 scan                  建立完整资产清单
 list                  scan 的别名
+duplicates            查看重复命令和 PATH 生效版本
 inspect <query>       查看单个软件及关联证据
 plan <query>          生成卸载计划
 remove <query>        默认 dry-run；显式授权后执行
+apply <plan-file>      验证并执行冻结计划
+history               查看执行事务
+undo <transaction>    预览或恢复 Trash 文件移动
 doctor                检查本机可用 Provider
 ```
 
@@ -43,6 +47,7 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - npm；
 - pipx；
 - uv；
+- rustup（把共享 inode 的工具链 shim 聚合为一个资产）；
 - 常见用户级 bin 目录。
 
 每条记录包含来源、版本、二进制、安装根目录和原生卸载命令。
@@ -69,6 +74,8 @@ Provider 负责从可信来源生成 `PackageRecord`：
 
 真正执行需要 `--execute --yes`。只有 `certain` 和 `high` 可信度关联可自动执行，`medium` 和 `low` 只进入人工检查。用户文件只移动到按时间戳隔离的废纸篓目录。
 
+计划包含内容哈希和目标文件的 device/inode 前置条件。`apply` 只执行经过验证的原始计划；包管理器卸载后还会验证已发现的二进制已消失。每次真实执行写入事务清单，供 `history` 查询和 `undo` 恢复 Trash 文件移动。
+
 ## 4. 威胁模型
 
 - 恶意目录名不能让扫描器越过用户主目录；
@@ -82,7 +89,7 @@ Provider 负责从可信来源生成 `PackageRecord`：
 
 ## 5. 版本路线
 
-### v0.1.1 — 可运行 MVP（本仓库当前状态）
+### v0.1.1 — 可运行 MVP
 
 - Swift 原生单文件可执行产物；
 - Homebrew、Cargo、npm、pipx、uv、手工二进制 Provider；
@@ -92,15 +99,25 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - 安全计划和可恢复执行；
 - 路径、置信度、命令信任、失败停止和 Provider fixture 单元测试与 GitHub Actions。
 
-### v0.2 — 覆盖更多安装体系
+### v0.2.0 — 深度扫描与可审计执行（本仓库当前状态）
+
+- rustup shim 聚合，减少手工二进制误报；
+- Homebrew 直接安装/依赖分类；
+- 同名命令重复安装与 PATH 生效版本；
+- 断链、失效 PATH、未归属及孤儿 launchd 项；
+- Google Antigravity CLI 数据规则；
+- 冻结计划、SHA-256、防 TOCTOU 文件身份校验和卸载后验证；
+- 事务历史与 Trash 文件恢复。
+
+### v0.3 — 覆盖更多安装体系
 
 - Apple PKG 收据（只读文件归属，不把 `pkgutil --forget` 当卸载）；
-- MacPorts、Nix、Conda/Mamba、mise/asdf/rustup、Go、RubyGems；
+- MacPorts、Nix、Conda/Mamba、mise/asdf、Go、RubyGems；
 - Homebrew JSON 元数据及 Cask `zap` 关联；
 - 用户规则与规则校验命令；
 - 扫描缓存和增量扫描。
 
-### v0.3 — 安装追踪
+### v0.4 — 安装追踪
 
 - 首次基线快照；
 - FSEvents 增量变更记录；
@@ -108,7 +125,7 @@ Provider 负责从可信来源生成 `PackageRecord`：
 - 软件运行期间写入目录观察；
 - 可导出、可审计的安装账本。
 
-### v0.4 — 生产化
+### v0.5 — 生产化
 
 - 签名与公证发布；
 - Homebrew Formula；
